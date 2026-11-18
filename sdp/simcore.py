@@ -30,12 +30,12 @@ def default_thrusters():
 def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
         failures=(), t_end=400.0, dt=0.1,
         eta0=(-15.0, 10.0, 20.0), eta_d=(0.0, 0.0, 0.0), seed=42,
-        pid_kw=None, observer_kw=None):
+        pid_kw=None, observer_kw=None, ctrl="pid", mpc_kw=None):
     """Прогон контура с расписанием отказов.
 
     failures — iterable (t_fail, kind, idx):
         kind: "prs" | "gyro" | "thruster"
-    pid_kw / observer_kw — переопределение настроек регулятора/наблюдателя.
+    ctrl: "pid" | "mpc". pid_kw / observer_kw / mpc_kw — настройки.
     Возвращает dict с временными рядами.
     """
     vessel = Vessel3DOF()
@@ -43,7 +43,17 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
     wind = Wind(speed=wind_speed, dir_deg=wind_dir)
     observer = DPObserver(vessel, dt=dt, omega0=2 * np.pi / tp,
                           **(observer_kw or {}))
-    controller = PIDController(**(pid_kw or {}))
+    if ctrl == "mpc":
+        from .mpc import MPCController
+        controller = MPCController(vessel, **(mpc_kw or {}))
+        mpc_every = max(1, int(controller.dt / dt))
+        # Каскад: позиция (x, y) — от MPC, курс (yaw) — от PID.
+        # Канал курса требует быстрого цикла 10 Гц против предела цикла
+        # аллокатора (мертвая зона + slew rate) — промышленная практика.
+        heading_pid = PIDController(**(pid_kw or {}))
+    else:
+        controller = PIDController(**(pid_kw or {}))
+        mpc_every = 1
     thrusters = default_thrusters()
     allocator = AzimuthAllocator(thrusters)
     sensors = SensorSuite(seed=seed + 1)
@@ -84,8 +94,18 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
         else:
             observer.x = observer.x + observer._f(observer.x, tau_cmd) * dt
 
-        tau_cmd = controller.compute(eta_d, observer.eta_hat,
-                                     observer.nu_hat, wind.force(), dt)
+        if ctrl == "mpc":
+            if k % mpc_every == 0:
+                d_hat = wind.force() + observer.bias_hat
+                tau_cmd = controller.compute(eta_d, observer.eta_hat,
+                                             observer.nu_hat, d_hat)
+            # Курс — от PID (быстрый цикл)
+            tau_pid = heading_pid.compute(eta_d, observer.eta_hat,
+                                          observer.nu_hat, wind.force(), dt)
+            tau_cmd[2] = tau_pid[2]
+        else:
+            tau_cmd = controller.compute(eta_d, observer.eta_hat,
+                                         observer.nu_hat, wind.force(), dt)
         u, alpha, tau_alloc = allocator.allocate(tau_cmd, dt)
         eta, nu = vessel.step(eta, nu, tau_alloc, tau_env, dt)
 
