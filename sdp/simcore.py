@@ -14,16 +14,22 @@ from .redundancy import SensorSuite
 
 
 def default_thrusters():
-    """Конфигурация DP-2: 2 носовых туннельных + 2 кормовых азимутальных."""
+    """Конфигурация DP-2: 2 носовых туннельных + 2 кормовых азимутальных.
+
+    Привод по NavDP4000: азимут 12°/с, серво-ошибка ±1–2° (у каждой
+    ДРУ своя постоянная), тяга PT1 3 с (0→50 % ≤ 10 с), реверс ≤ 15 с.
+    """
     return [
         AzimuthThruster(lx=30.0, ly=0.0, t_max=1.5e5, az0_deg=90.0,
                         tunnel=True),
         AzimuthThruster(lx=18.0, ly=0.0, t_max=1.5e5, az0_deg=90.0,
                         tunnel=True),
         AzimuthThruster(lx=-30.0, ly=6.0, t_max=2.5e5, az0_deg=60.0,
-                        az_rate_deg_s=10.0, forbidden_zones=[(-115.0, -65.0)]),
+                        az_rate_deg_s=12.0, servo_err_deg=-1.2,
+                        forbidden_zones=[(-115.0, -65.0)]),
         AzimuthThruster(lx=-30.0, ly=-6.0, t_max=2.5e5, az0_deg=-60.0,
-                        az_rate_deg_s=10.0, forbidden_zones=[(65.0, 115.0)]),
+                        az_rate_deg_s=12.0, servo_err_deg=1.6,
+                        forbidden_zones=[(65.0, 115.0)]),
     ]
 
 

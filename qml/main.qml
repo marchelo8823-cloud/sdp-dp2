@@ -397,7 +397,7 @@ ApplicationWindow {
                         var ctx = getContext("2d");
                         ctx.reset();
                         var w = width, h = height;
-                        var R = Math.min(w, h) / 2 - 14;
+                        var R = Math.max(20, Math.min(w, h) / 2 - 14);
                         var cx = w / 2, cy = h / 2;
                         var s = Telem.state;
                         // диск
@@ -545,7 +545,7 @@ ApplicationWindow {
                             var ctx = getContext("2d");
                             ctx.reset();
                             var w = width, h = height;
-                            var R = Math.min(w, h) / 2 - 10;
+                            var R = Math.max(20, Math.min(w, h) / 2 - 10);
                             var cx = w / 2, cy = h / 2;
                             var g = ctx.createLinearGradient(cx, cy - R, cx, cy + R);
                             g.addColorStop(0, root.pal.disk1);
@@ -769,7 +769,7 @@ ApplicationWindow {
                             var ctx = getContext("2d");
                             ctx.reset();
                             var w = width, h = height;
-                            var R = Math.min(w, h) / 2 - 8;
+                            var R = Math.max(20, Math.min(w, h) / 2 - 8);
                             var cx = w / 2, cy = h / 2;
                             var g = ctx.createLinearGradient(cx, cy - R, cx, cy + R);
                             g.addColorStop(0, root.pal.disk1);

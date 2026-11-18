@@ -69,24 +69,70 @@ class ThrustAllocator:
 # ---------------------------------------------------------------------------
 
 class AzimuthThruster:
-    """Азимутальная ДРУ с физическими ограничениями.
+    """Азимутальная ДРУ с физическими ограничениями и приводом.
 
     tunnel=True  — туннельный движитель: азимут жёстко фиксирован,
                    тяга знакопеременная (реверс шага).
     forbidden_zones — кортежи (start_deg, end_deg), start < end,
                    в диапазоне (-180, 180].
+
+    Модель привода (по требованиям NavDP4000):
+      - тяга: PT1 (thrust_tau, 0→50 % ≤ 10 с) + ограничение скорости
+        реверса (полный реверс 100→−100 % за reverse_time ≤ 15 с);
+      - азимут: PT1 (az_tau) + ограничение скорости az_rate (≥ 12°/с);
+      - серво-ошибка азимута servo_err (≤ ±2°): фактический угол отличается
+        от отработанного — сила прикладывается по фактическому углу.
+    th.u / th.alpha — ФАКТИЧЕСКИЕ (отработанные) значения; команды
+    аллокатора — th.u_cmd / th.alpha_cmd.
     """
     def __init__(self, lx, ly, t_max=2.5e5, az0_deg=0.0,
-                 az_rate_deg_s=10.0, forbidden_zones=(), tunnel=False):
+                 az_rate_deg_s=12.0, forbidden_zones=(), tunnel=False,
+                 thrust_tau=2.0, reverse_time=15.0, az_tau=0.2,
+                 servo_err_deg=0.0):
         self.lx, self.ly = lx, ly
         self.t_max = t_max
         self.az_rate = np.deg2rad(az_rate_deg_s)
         self.forbidden_zones = [tuple(np.deg2rad(z)) for z in forbidden_zones]
         self.tunnel = tunnel
         self.failed = False
-        # Текущее состояние
+        # Привод
+        self.thrust_tau = thrust_tau
+        self.du_reverse = 2.0 * t_max / reverse_time   # Н/с при реверсе
+        self.az_tau = az_tau
+        self.servo_err = np.deg2rad(servo_err_deg)
+        self._reversing = False
+        # Текущее состояние (факт)
         self.alpha = np.deg2rad(az0_deg)
         self.u = 0.0
+        # Команды аллокатора
+        self.u_cmd = 0.0
+        self.alpha_cmd = np.deg2rad(az0_deg)
+
+    def step_drive(self, u_cmd, alpha_cmd, dt):
+        """Отработка команд приводом за шаг dt (обновляет u и alpha)."""
+        self.u_cmd, self.alpha_cmd = u_cmd, alpha_cmd
+        # Азимут: PT1 на ошибку + ограничение скорости поворота
+        da = wrap_pi(alpha_cmd - self.alpha)
+        da *= min(1.0, dt / max(self.az_tau, dt))
+        da = np.clip(da, -self.az_rate * dt, self.az_rate * dt)
+        self.alpha = wrap_pi(self.alpha + da)
+        # Тяга: PT1; реверс — линейная отработка со скоростью реверса
+        # (иначе экспоненциальный «хвост» растянет маневр за 15 с)
+        du = u_cmd - self.u
+        if u_cmd * self.u < 0.0:
+            self._reversing = True
+        if self._reversing:
+            step = np.clip(du, -self.du_reverse * dt, self.du_reverse * dt)
+            if abs(du) <= self.du_reverse * dt:
+                self._reversing = False
+        else:
+            step = du * min(1.0, dt / max(self.thrust_tau, dt))
+        self.u = np.clip(self.u + step, -self.t_max, self.t_max)
+
+    @property
+    def alpha_eff(self):
+        """Фактический угол оси тяги с серво-ошибкой сервопривода."""
+        return self.alpha + self.servo_err
 
     def in_forbidden(self, alpha):
         for a, b in self.forbidden_zones:
@@ -166,10 +212,20 @@ class AzimuthAllocator:
         a_alt = wrap_pi(a_des + np.pi)
         d_cur = abs(wrap_pi(a_des - th.alpha))
         d_alt = abs(wrap_pi(a_alt - th.alpha))
+        sgn = 1.0
         if d_alt < d_cur - np.deg2rad(20.0):
-            a_des, u_des = a_alt, -mag
+            a_des, sgn = a_alt, -1.0
+        # Азимутное демпфирование: пока запрошенный угол в полосе ±25°
+        # от текущего, азимут держим, а силу проецируем на текущую ось.
+        # Без этого инерция привода (PT1 + ограничение скорости) в связке
+        # со свободным углом QP даёт «охоту» азимута и раскачку курса —
+        # предельный цикл, пойманный на T-05 (seed 141).
+        d_hold = wrap_pi(a_des - th.alpha)
+        if abs(d_hold) < np.deg2rad(25.0):
+            a_des = th.alpha
+            u_des = sgn * mag * np.cos(d_hold)
         else:
-            u_des = mag
+            u_des = sgn * mag
         # Запрещённая зона: к ближайшей кромке от текущего положения
         zone = th.in_forbidden(a_des)
         if zone is not None:
@@ -194,10 +250,13 @@ class AzimuthAllocator:
         f = self._constrained_forces(tau, active)
         for i, th in enumerate(self.thrusters):
             if th.failed:
-                th.u, _ = 0.0, th.alpha
+                th.step_drive(0.0, th.alpha, dt)
                 continue
-            th.u, th.alpha = self._apply_azimuth_limits(th, f[i], dt)
-        f_act = np.array([[th.u * np.cos(th.alpha), th.u * np.sin(th.alpha)]
+            u_cmd, alpha_cmd = self._apply_azimuth_limits(th, f[i], dt)
+            th.step_drive(u_cmd, alpha_cmd, dt)
+        # Сила — по фактическому углу оси (с серво-ошибкой)
+        f_act = np.array([[th.u * np.cos(th.alpha_eff),
+                           th.u * np.sin(th.alpha_eff)]
                           if not th.failed else [0.0, 0.0]
                           for th in self.thrusters])
         u = np.array([th.u for th in self.thrusters])
