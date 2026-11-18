@@ -1,0 +1,109 @@
+#!/bin/bash
+# SDP-DP2 — лаунчер симулятора динамического позиционирования (macOS).
+#
+# Двойной клик по SDP-DP2.app → это окно Терминала с меню сценариев.
+# Исходники и окружение живут в ~/Library/Application Support/SDP-DP2,
+# поэтому приложение в /Applications не требует прав администратора
+# при работе и обновлении.
+
+set -u
+
+# При запуске из Finder TTY нет — перезапускаем себя в Терминале.
+if [ -z "${SDP_FORCE_CLI:-}" ] && [ ! -t 0 ]; then
+    osascript -e 'tell application "Terminal" to activate' \
+              -e "tell application \"Terminal\" to do script \"'$0'; exit\""
+    exit 0
+fi
+
+APP_RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+DATA="$HOME/Library/Application Support/SDP-DP2"
+SRC="$DATA/src"
+VENV="$DATA/venv"
+PY=/usr/bin/python3
+
+clear
+echo "╔══════════════════════════════════════════════════════╗"
+echo "║   SDP-DP2 — Симулятор динамического позиционирования ║"
+echo "╚══════════════════════════════════════════════════════╝"
+echo
+
+if [ ! -x "$PY" ]; then
+    echo "ОШИБКА: не найден $PY."
+    echo "Установите инструменты командной строки Xcode:"
+    echo "    xcode-select --install"
+    read -r -p "Enter — выход" _
+    exit 1
+fi
+
+mkdir -p "$DATA"
+# Синхронизация исходников из бандла (обновления приложения подхватываются).
+rsync -a --delete --exclude '__pycache__' "$APP_RES/src/" "$SRC/"
+
+# Первый запуск: виртуальное окружение + зависимости (нужен интернет).
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "Первый запуск: создаю окружение Python и ставлю зависимости"
+    echo "(numpy, matplotlib — нужен доступ в интернет, 1–2 минуты)..."
+    echo
+    if ! "$PY" -m venv "$VENV"; then
+        echo "ОШИБКА: не удалось создать venv."
+        read -r -p "Enter — выход" _
+        exit 1
+    fi
+    if ! "$VENV/bin/pip" install --quiet --upgrade pip || \
+       ! "$VENV/bin/pip" install --quiet -r "$SRC/requirements.txt"; then
+        echo "ОШИБКА: установка зависимостей не удалась (проверьте интернет)."
+        rm -rf "$VENV"
+        read -r -p "Enter — выход" _
+        exit 1
+    fi
+    echo "Окружение готово."
+    echo
+fi
+
+cd "$SRC" || exit 1
+
+run_script() {  # $1 — скрипт, $2... — файлы результатов для открытия
+    local script="$1"; shift
+    echo
+    echo "── Запуск: $script ──────────────────────────────"
+    "$VENV/bin/python" "$script"
+    local rc=$?
+    echo "──────────────────────────────────────────────────"
+    if [ $rc -eq 0 ]; then
+        local f
+        for f in "$@"; do
+            [ -e "$f" ] && open -g "$f"
+        done
+        echo "Готово."
+    else
+        echo "Завершилось с ошибкой (код $rc) — см. вывод выше."
+    fi
+    echo
+    read -r -p "Enter — назад в меню" _
+}
+
+while true; do
+    clear
+    echo "SDP-DP2 — выберите сценарий:"
+    echo
+    echo "  1) simulate.py            Динамический сценарий с отказами (~1 мин)"
+    echo "  2) capability.py          DP capability: поляры предельного ветра (~1 мин)"
+    echo "  3) trials.py              DP-2 trials, 6 испытаний (долго, ~15 мин)"
+    echo "  4) hil_trials.py          Trials на HIL-стенде UDP (долго, ~15 мин)"
+    echo "  5) compare_controllers.py PID vs MPC на trials (долго)"
+    echo "  6) compare_dob.py         Оценка возмущений: bias FF + RBF-DOB (долго)"
+    echo "  q) Выход"
+    echo
+    read -r -n 1 -p "Выбор: " ch
+    echo
+    case "$ch" in
+        1) run_script simulate.py results_dp2.png ;;
+        2) run_script capability.py capability_dp2.png ;;
+        3) run_script trials.py trials.png trials_report.md ;;
+        4) run_script hil_trials.py hil_trials.png ;;
+        5) run_script compare_controllers.py compare_controllers.png ;;
+        6) run_script compare_dob.py compare_dob.png ;;
+        q|Q) echo "До встречи на рейде."; exit 0 ;;
+        *) ;;
+    esac
+done

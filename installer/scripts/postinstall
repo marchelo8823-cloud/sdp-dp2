@@ -1,0 +1,9 @@
+#!/bin/bash
+# postinstall: передать владение приложением вошедшему пользователю,
+# чтобы обновление/удаление не требовало пароля администратора.
+CONSOLE_USER=$(stat -f %Su /dev/console)
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    chown -R "$CONSOLE_USER":staff "/Applications/SDP-DP2.app" || true
+fi
+chmod +x "/Applications/SDP-DP2.app/Contents/MacOS/SDP-DP2" || true
+exit 0

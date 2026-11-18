@@ -48,6 +48,7 @@ Thrust allocation: распределение тяги по азимутальн
 - `capability.py` — DP capability analysis: поляры предельного ветра
   (статический метод IMCA M 140)
 - `hil_trials.py` — пакет испытаний DP-2 в HIL-режиме
+- `installer/` — сборка установочного пакета macOS (app-бандл + .pkg)
 
 ## Конфигурация движителей (DP-2)
 
@@ -71,6 +72,24 @@ pip install -r requirements.txt
 python simulate.py     # динамический сценарий с отказами
 python capability.py   # поляры предельного ветра
 ```
+
+## Установочный пакет macOS
+
+Сборка (на Mac с Xcode Command Line Tools):
+
+```bash
+bash installer/build_pkg.sh     # → dist/SDP-DP2-Installer.pkg
+```
+
+Установка: двойной клик по `SDP-DP2-Installer.pkg` → симулятор ставится
+как `/Applications/SDP-DP2.app`. Пакет не подписан Developer ID, поэтому
+при первом открытии установщика — правый клик → «Открыть» (Gatekeeper).
+Запуск: двойной клик по SDP-DP2 в «Программах» — открывается Терминал
+с меню сценариев (simulate, capability, trials, HIL, сравнения PID/MPC
+и DOB). При первом запуске создаётся окружение Python и ставятся
+зависимости (нужен интернет); исходники, окружение и результаты живут в
+`~/Library/Application Support/SDP-DP2`, права администратора при работе
+не нужны.
 
 ## Результаты
 
@@ -187,4 +206,4 @@ random walk со штатным q_bias) оставался ≈ 0 — класс�
 - [x] MPC-вариант регулятора (каскад MPC+PID, сравнение на trials)
 - [x] Адаптивный наблюдатель возмущений (bias FF + RBF-DOB, валидация
   в несовершенном мире)
-- [ ] Установочный пакет для macOS
+- [x] Установочный пакет для macOS (app-бандл + .pkg, лаунчер с меню)
