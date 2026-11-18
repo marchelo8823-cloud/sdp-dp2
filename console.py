@@ -102,8 +102,8 @@ class DPConsole:
                        dir_deg=np.rad2deg(self.g_m)).force()
 
         dob_body = self.dob.estimate(self.observer.nu_hat)
-        p = self.sensors.read_position(self.eta)
-        h = self.sensors.read_heading(self.eta[2])
+        p = self.sensors.read_position(self.eta, self.t)
+        h = self.sensors.read_heading(self.eta[2], self.t)
         if p is not None and h is not None:
             self.observer.step(np.array([p[0], p[1], h]),
                                self.tau_cmd + dob_body)

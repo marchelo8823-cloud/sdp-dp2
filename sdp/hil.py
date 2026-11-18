@@ -121,8 +121,8 @@ def _plant_main(hs, tp, wave_heading, wind_speed, wind_dir,
         eta, nu = vessel.step(eta, nu, tau, tau_env, dt)
 
         # Датчики -> телеметрия
-        p = sensors.read_position(eta)
-        h = sensors.read_heading(eta[2])
+        p = sensors.read_position(eta, t)
+        h = sensors.read_heading(eta[2], t)
         msg = {"t": t,
                "pos": [float(p[0]), float(p[1])] if p is not None else None,
                "hdg": float(h) if h is not None else None,

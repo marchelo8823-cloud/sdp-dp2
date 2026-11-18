@@ -170,6 +170,59 @@ ApplicationWindow {
         }
     }
 
+    // строка опорной системы: состояние, вес/σ, снятие/возврат (как Refsys)
+    component SysRow: RowLayout {
+        property string name: ""
+        property string st: "ok"        // ok | rejected | deselected | failed
+        property string reason: ""
+        property string info: ""
+        property bool disagree: false
+        property bool used: false
+        property string kind: "prs"
+        property int idx: 0
+        spacing: 6
+        Rectangle {
+            width: 10; height: 10; radius: 5
+            color: st === "ok" ? (disagree ? root.yellow : root.green)
+                 : st === "deselected" ? root.pal.dim : root.red
+        }
+        Text { text: name; color: root.pal.txt; font.pixelSize: 12 }
+        Text {
+            visible: used
+            text: "● принят"
+            color: root.cyan; font.pixelSize: 10
+        }
+        Text {
+            text: st === "ok" ? (disagree ? "РАСХОДИТСЯ" : "В РАБОТЕ")
+                : st === "rejected" ? "ОТБРАК: " + reason
+                : st === "deselected" ? "СНЯТА" : "ОТКАЗ"
+            color: st === "ok" ? (disagree ? root.yellow : root.green)
+                 : st === "deselected" ? root.pal.dim : root.red
+            font.pixelSize: 10
+            font.family: "Menlo"
+            elide: Text.ElideRight
+            Layout.maximumWidth: 140
+        }
+        Item { Layout.fillWidth: true }
+        Text { text: info; color: root.pal.dim; font.pixelSize: 10; font.family: "Menlo" }
+        DpButton {
+            visible: st !== "failed"
+            text: st === "ok" ? "Снять" : "Вернуть"
+            padding: 3
+            onClicked: {
+                if (st === "ok")
+                    Telem.cmd({ "action": "sensor_deselect", "kind": kind,
+                                "idx": idx, "on": true })
+                else if (st === "deselected")
+                    Telem.cmd({ "action": "sensor_deselect", "kind": kind,
+                                "idx": idx, "on": false })
+                else
+                    Telem.cmd({ "action": "sensor_restore", "kind": kind,
+                                "idx": idx })
+            }
+        }
+    }
+
     component DpButton: Button {
         id: control
         property bool danger: false
@@ -768,7 +821,7 @@ ApplicationWindow {
                 title: "Wind"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredHeight: 3
+                Layout.preferredHeight: 2
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 2
@@ -838,18 +891,43 @@ ApplicationWindow {
 
             // ===== sensors
             DpPanel {
-                title: "Датчики"
+                title: "Опорные системы"
+                rightTitle: "вес · σ / откл."
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredHeight: 2
+                Layout.preferredHeight: 3
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 2
-                    LedRow { name: "PRS 1"; failed: root.hasData() && Telem.state.sensors.prs[0] }
-                    LedRow { name: "PRS 2"; failed: root.hasData() && Telem.state.sensors.prs[1] }
-                    LedRow { name: "PRS 3"; failed: root.hasData() && Telem.state.sensors.prs[2] }
-                    LedRow { name: "ГИРО 1"; failed: root.hasData() && Telem.state.sensors.gyro[0] }
-                    LedRow { name: "ГИРО 2"; failed: root.hasData() && Telem.state.sensors.gyro[1] }
+                    Repeater {
+                        model: root.hasData() && Telem.state.sensors.prs_detail
+                               ? Telem.state.sensors.prs_detail : []
+                        delegate: SysRow {
+                            Layout.fillWidth: true
+                            kind: "prs"; idx: index
+                            name: modelData.name
+                            st: modelData.state
+                            reason: modelData.reason
+                            disagree: modelData.disagree
+                            info: modelData.weight_pct.toFixed(0) + "%  σ"
+                                  + modelData.sigma_m.toFixed(1)
+                        }
+                    }
+                    Repeater {
+                        model: root.hasData() && Telem.state.sensors.gyro_detail
+                               ? Telem.state.sensors.gyro_detail : []
+                        delegate: SysRow {
+                            Layout.fillWidth: true
+                            kind: "gyro"; idx: index
+                            name: modelData.name
+                            st: modelData.state
+                            reason: modelData.reason
+                            disagree: modelData.disagree
+                            used: modelData.used
+                            info: (modelData.dev_deg >= 0 ? "+" : "")
+                                  + modelData.dev_deg.toFixed(1) + "°"
+                        }
+                    }
                     KV {
                         k: "Отклонение позиции"
                         v: root.hasData() ? Telem.state.pos_err.toFixed(2) + " м" : "—"
@@ -951,7 +1029,9 @@ ApplicationWindow {
                         Text {
                             x: 10
                             anchors.verticalCenter: parent.verticalCenter
-                            text: modelData.t.toFixed(0) + " с   " + modelData.text
+                            text: (modelData.clock ? modelData.clock
+                                  : modelData.t.toFixed(0) + " с")
+                                  + "   " + modelData.text
                             font.pixelSize: 11
                             font.family: "Menlo"
                             color: modelData.acked ? root.pal.dim
@@ -1004,6 +1084,35 @@ ApplicationWindow {
                             property bool f: root.hasData() && Telem.state.sensors.gyro[0]
                             text: f ? "ГИРО1↩" : "ГИРО1"; accent: true
                             onClicked: Telem.cmd(f ? { "action": "recover", "kind": "gyro", "idx": 0 } : { "action": "fail", "kind": "gyro", "idx": 0 })
+                        }
+                    }
+                    RowLayout {
+                        spacing: 4
+                        Text { text: "Сбой:"; color: root.pal.dim; font.pixelSize: 11 }
+                        DpButton {
+                            text: "PRS1 завис"
+                            onClicked: Telem.cmd({ "action": "fail", "kind": "prs", "idx": 0, "ftype": "frozen" })
+                        }
+                        DpButton {
+                            text: "PRS2 шум"
+                            onClicked: Telem.cmd({ "action": "fail", "kind": "prs", "idx": 1, "ftype": "noisy" })
+                        }
+                        DpButton {
+                            text: "PRS3 плывёт"
+                            onClicked: Telem.cmd({ "action": "fail", "kind": "prs", "idx": 2, "ftype": "drift" })
+                        }
+                        DpButton {
+                            text: "ГИРО2 шум"
+                            onClicked: Telem.cmd({ "action": "fail", "kind": "gyro", "idx": 1, "ftype": "noisy" })
+                        }
+                        DpButton {
+                            text: "Датчики ↩"
+                            onClicked: {
+                                for (var i = 0; i < 3; i++)
+                                    Telem.cmd({ "action": "recover", "kind": "prs", "idx": i })
+                                for (var j = 0; j < 2; j++)
+                                    Telem.cmd({ "action": "recover", "kind": "gyro", "idx": j })
+                            }
                         }
                     }
                     Text { text: "Ветер: " + windV.value.toFixed(1) + " м/с"; color: root.pal.dim; font.pixelSize: 11 }

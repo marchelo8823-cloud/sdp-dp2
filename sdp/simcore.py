@@ -152,8 +152,8 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
         # Структурированная часть возмущения (RBF), body-кадр
         dob_body = (dob_obs.estimate(observer.nu_hat)
                     if dob_obs is not None else 0.0)
-        p = sensors.read_position(eta)
-        h = sensors.read_heading(eta[2])
+        p = sensors.read_position(eta, t)
+        h = sensors.read_heading(eta[2], t)
         if p is not None and h is not None:
             # EKF видит tau + RBF: его bias отслеживает только остаток
             observer.step(np.array([p[0], p[1], h]), tau_cmd + dob_body)

@@ -8,9 +8,6 @@ t = 300 с — отказ кормового правого движителя (
 азимутов и ограничением скорости поворота. После отказа движителя
 конфигурация перестраивается автоматически.
 
-Consequence analysis (1 Гц): последствия «ещё одного» отказа —
-загрузка оставшихся движителей и предельный ветер после худшего отказа.
-
 Среда: Hs = 2 м, Tp = 7 с, ветер 10 м/с, течение 0.3 м/с.
 """
 import numpy as np
@@ -85,8 +82,8 @@ def main():
         tau_env = Vessel3DOF.R(eta[2]).T @ (waves.force(t) + wind.force())
 
         # --- Датчики + наблюдатель ---
-        p = sensors.read_position(eta)
-        h = sensors.read_heading(eta[2])
+        p = sensors.read_position(eta, t)
+        h = sensors.read_heading(eta[2], t)
         if p is not None and h is not None:
             z = np.array([p[0], p[1], h])
             observer.step(z, tau_cmd)

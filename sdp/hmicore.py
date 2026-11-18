@@ -15,6 +15,7 @@ import time
 import numpy as np
 
 from console import DPConsole
+from sdp.redundancy import GYRO_DISAGREE_DEG, DEV_LIM
 
 DT = 0.1
 KN = 1.94384          # м/с → узлы
@@ -41,6 +42,8 @@ class HMIState:
         self._prs_lost_t = None      # старт счисления положения
         self.gyro_release_s = 4.0    # упор снимается через столько секунд
         self._released = False
+        self._sen_prev = None        # снимок состояний датчиков (фронты)
+        self._prs_dis_prev = False   # фронт аварии «расхождение PRS»
         self._sim_thread = threading.Thread(target=self._sim_loop,
                                             daemon=True)
         self._sim_thread.start()
@@ -49,6 +52,7 @@ class HMIState:
     def _raise(self, text, level):
         self._alarm_id += 1
         self.alarms.insert(0, {"id": self._alarm_id, "t": self.con.t,
+                               "clock": time.strftime("%H:%M:%S"),
                                "text": text, "level": level, "acked": False})
         self.alarms = self.alarms[:50]
 
@@ -73,6 +77,7 @@ class HMIState:
                     self._last_conseq_t = self.con.t
                 self._watch_limits()
                 self._watch_degradation()
+                self._watch_sensors()
 
     def _watch_degradation(self):
         """Счисление курса/положения и аварийное снятие упора.
@@ -83,8 +88,8 @@ class HMIState:
         по модели, вероятный уход растёт со временем.
         """
         c = self.con
-        gyro_lost = all(c.sensors.gyro_failed)
-        prs_lost = all(c.sensors.prs_failed)
+        gyro_lost = c.sensors.gyro_available() == 0
+        prs_lost = c.sensors.prs_available() == 0
         # --- гирокомпасы
         if gyro_lost and self._gyro_lost_t is None:
             self._gyro_lost_t = c.t
@@ -106,6 +111,47 @@ class HMIState:
                         "по модели, точность падает", 2)
         if not prs_lost:
             self._prs_lost_t = None
+
+    def _watch_sensors(self):
+        """Фронтовые аварии по каждому датчику: отказ, отбраковка,
+        расхождение гирокомпасов, возврат в работу."""
+        s = self.con.sensors
+        cur = {}
+        for i, ch in enumerate(s.prs):
+            cur[f"prs{i}"] = (ch.state, ch.reason, ch.disagree)
+        for i, ch in enumerate(s.gyro):
+            cur[f"gyro{i}"] = (ch.state, ch.reason, ch.disagree)
+        if self._sen_prev is not None:
+            for key, val in cur.items():
+                old = self._sen_prev.get(key)
+                if old is None or old == val:
+                    continue
+                kind, idx = key[:-1], int(key[-1])
+                name = (f"PRS {idx + 1}" if kind == "prs"
+                        else f"ГИРО {idx + 1}")
+                st, reason = val[0], val[1]
+                old_st = old[0]
+                if st == "rejected" and old_st != "rejected":
+                    self._raise(f"ДАТЧИКИ: {name} отбракована ({reason})",
+                                1)
+                elif st == "failed" and old_st != "failed":
+                    self._raise(f"ДАТЧИКИ: отказ {name} — нет данных", 1)
+                elif st == "ok" and old_st in ("rejected", "failed",
+                                               "deselected"):
+                    self._raise(f"ДАТЧИКИ: {name} в работе", 0)
+                if kind == "gyro" and idx == 0:
+                    dis_new, dis_old = val[2], old[2]
+                    if dis_new and not dis_old:
+                        self._raise("ДАТЧИКИ: расхождение гирокомпасов "
+                                    f"> {GYRO_DISAGREE_DEG:.0f}°", 1)
+        self._sen_prev = cur
+        # расхождение систем положения — фронт по любому каналу
+        dis = any(ch.disagree for ch in s.prs)
+        if dis and not self._prs_dis_prev:
+            self._raise("ДАТЧИКИ: расхождение систем положения "
+                        f"> {DEV_LIM:.1f} м — проверьте и снимите "
+                        "неисправную", 1)
+        self._prs_dis_prev = dis
 
     def degradation(self):
         """Снимок деградационного состояния для HMI."""
@@ -206,7 +252,9 @@ class HMIState:
                                   np.rad2deg(np.arctan2(fy, fx))) % 360, 1),
                               "moment_knm": round(float(mz) / 1e3, 1)},
                 "sensors": {"prs": [bool(f) for f in c.sensors.prs_failed],
-                            "gyro": [bool(f) for f in c.sensors.gyro_failed]},
+                            "gyro": [bool(f) for f in c.sensors.gyro_failed],
+                            "prs_detail": c.sensors.prs_detail(),
+                            "gyro_detail": c.sensors.gyro_detail()},
                 "conseq": {"level": c.conseq_level, "text": c.conseq_text},
                 "degrad": self.degradation(),
                 # ветер относительно судна: от носа / от правого борта
@@ -248,11 +296,20 @@ class HMIState:
                 self.con.set_hs(cmd["hs"])
             elif act == "fail":
                 kind, idx = cmd["kind"], int(cmd["idx"])
-                self.con.inject(kind, idx)
-                name = {"thruster": f"ДРУ {idx + 1}",
-                        "prs": f"PRS {idx + 1}",
-                        "gyro": f"ГИРО {idx + 1}"}[kind]
-                self._raise(f"ИНСТРУКТОР: отказ {name}", 1)
+                ftype = cmd.get("ftype", "fail")
+                if kind == "prs":
+                    self.con.sensors.fail_prs(idx, ftype)
+                elif kind == "gyro":
+                    self.con.sensors.fail_gyro(idx, ftype)
+                else:
+                    self.con.inject(kind, idx)
+                if kind == "thruster":
+                    self._raise(f"ИНСТРУКТОР: отказ ДРУ {idx + 1}", 1)
+                elif ftype != "fail":
+                    self._raise(f"ИНСТРУКТОР: сбой «{ftype}» "
+                                f"{'PRS' if kind == 'prs' else 'ГИРО'} "
+                                f"{idx + 1}", 1)
+                # «нет данных» по датчикам поднимет _watch_sensors
             elif act == "recover":
                 # возврат агрегата в работу (инструктор)
                 kind, idx = cmd["kind"], int(cmd["idx"])
@@ -260,12 +317,36 @@ class HMIState:
                     self.con.thrusters[idx].failed = False
                     name = f"ДРУ {idx + 1}"
                 elif kind == "prs":
-                    self.con.sensors.prs_failed[idx] = False
+                    self.con.sensors.recover_prs(idx)
                     name = f"PRS {idx + 1}"
                 else:
-                    self.con.sensors.gyro_failed[idx] = False
+                    self.con.sensors.recover_gyro(idx)
                     name = f"ГИРО {idx + 1}"
                 self._raise(f"ИНСТРУКТОР: {name} возвращён в работу", 0)
+            elif act == "sensor_deselect":
+                # оператор снимает/возвращает систему (как в K-Pos Refsys)
+                kind, idx = cmd["kind"], int(cmd["idx"])
+                on = bool(cmd.get("on", True))
+                if kind == "prs":
+                    self.con.sensors.deselect_prs(idx, on)
+                    name = f"PRS {idx + 1}"
+                else:
+                    self.con.sensors.deselect_gyro(idx, on)
+                    name = f"ГИРО {idx + 1}"
+                self._raise(f"ОПЕРАТОР: {name} "
+                            + ("снята с вотирования" if on
+                               else "возвращена в вотирование"), 0)
+            elif act == "sensor_restore":
+                # оператор возвращает отбракованную систему
+                kind, idx = cmd["kind"], int(cmd["idx"])
+                if kind == "prs":
+                    self.con.sensors.restore_prs(idx)
+                    name = f"PRS {idx + 1}"
+                else:
+                    self.con.sensors.restore_gyro(idx)
+                    name = f"ГИРО {idx + 1}"
+                self._raise(f"ОПЕРАТОР: {name} возвращена после "
+                            "отбраковки", 0)
             elif act == "thrust_restore":
                 # оператор вручную возвращает упор после снятия
                 self._released = False
@@ -283,6 +364,8 @@ class HMIState:
                 self._gyro_lost_t = None
                 self._prs_lost_t = None
                 self._released = False
+                self._sen_prev = None
+                self._prs_dis_prev = False
                 self._raise("Сброс симуляции", 0)
             elif act == "limits":
                 self.warn_pos = float(cmd["warn"])
