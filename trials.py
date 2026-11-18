@@ -13,11 +13,12 @@
 худшей; максимумы берутся по скользящему среднему 60 с (WF-фильтрация).
 """
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 from sdp.simcore import run, evaluate
+
+# pyplot импортируется внутри main(): модуль входит в цепочку импортов
+# HIL-прогонов — на верхнем уровне pyplot не нужен (и его font-cache
+# с файловой блокировкой мешает параллельным запускам).
 
 CRITERIA = {"pos_mean": 2.0, "pos_max": 5.0, "hdg_max": 3.0}
 
@@ -47,6 +48,9 @@ N_RUNS = 5              # реализаций шума на испытание 
 
 
 def main():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     rows = []
     logs = []
     for i, trial in enumerate(TRIALS):
