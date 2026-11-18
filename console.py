@@ -134,6 +134,12 @@ class DPConsole:
     def set_wind(self, speed, dir_deg):
         self.wind = Wind(speed=float(speed), dir_deg=float(dir_deg))
 
+    def set_hs(self, hs):
+        """Изменить высоту волны на ходу (пересоздаём генератор волн)."""
+        self.hs = float(hs)
+        self.waves = WaveForce(hs=self.hs, tp=self.tp, heading_deg=45.0,
+                               seed=self.seed)
+
     def set_setpoint(self, north, east):
         self.eta_d[0], self.eta_d[1] = float(north), float(east)
 

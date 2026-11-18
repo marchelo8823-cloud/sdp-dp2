@@ -28,9 +28,10 @@ chmod +x "$APP/Contents/MacOS/SDP-DP2"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' \
       sdp "$APP/Contents/Resources/src/"
 cp simulate.py capability.py trials.py hil_trials.py \
-   compare_controllers.py compare_dob.py console.py \
+   compare_controllers.py compare_dob.py console.py webhmi.py \
    requirements.txt README.md \
    "$APP/Contents/Resources/src/"
+rsync -a --exclude '__pycache__' webhmi docs "$APP/Contents/Resources/src/"
 
 # Убрать extended attributes — иначе в пакет попадают AppleDouble-файлы ._*.
 xattr -cr build/payload

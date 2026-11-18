@@ -93,6 +93,7 @@ while true; do
     echo "  5) compare_controllers.py PID vs MPC на trials (долго)"
     echo "  6) compare_dob.py         Оценка возмущений: bias FF + RBF-DOB (долго)"
     echo "  7) console.py             DP-пульт: интерактивная консоль оператора (GUI)"
+    echo "  8) webhmi.py              Web-HMI: пульт в браузере, стилистика K-Pos"
     echo "  q) Выход"
     echo
     read -r -n 1 -p "Выбор: " ch
@@ -105,6 +106,7 @@ while true; do
         5) run_script compare_controllers.py compare_controllers.png ;;
         6) run_script compare_dob.py compare_dob.png ;;
         7) run_script console.py ;;
+        8) run_script webhmi.py ;;
         q|Q) echo "До встречи на рейде."; exit 0 ;;
         *) ;;
     esac
