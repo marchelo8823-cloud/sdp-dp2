@@ -34,6 +34,11 @@ class HMIState:
         self._limit_state = 0   # детектор фронтов по ошибке позиции
         self._conseq_state = 0
         self._last_conseq_t = -10.0
+        # --- деградационные состояния (по образцу промышленных пультов)
+        self._gyro_lost_t = None     # старт счисления курса (модельное t)
+        self._prs_lost_t = None      # старт счисления положения
+        self.gyro_release_s = 4.0    # упор снимается через столько секунд
+        self._released = False
         self._sim_thread = threading.Thread(target=self._sim_loop,
                                             daemon=True)
         self._sim_thread.start()
@@ -65,6 +70,68 @@ class HMIState:
                     self.con.update_consequence()
                     self._last_conseq_t = self.con.t
                 self._watch_limits()
+                self._watch_degradation()
+
+    def _watch_degradation(self):
+        """Счисление курса/положения и аварийное снятие упора.
+
+        Потеря всех гирокомпасов → счисление курса; через
+        gyro_release_s секунд — снятие упора (автоматика не держит
+        судно, нужно ручное управление). Потеря всех PRS → удержание
+        по модели, вероятный уход растёт со временем.
+        """
+        c = self.con
+        gyro_lost = all(c.sensors.gyro_failed)
+        prs_lost = all(c.sensors.prs_failed)
+        # --- гирокомпасы
+        if gyro_lost and self._gyro_lost_t is None:
+            self._gyro_lost_t = c.t
+            self._raise("ГИРОКОМПАСЫ: нет данных — курс по счислению. "
+                        f"Упор будет снят через {self.gyro_release_s:.0f} с",
+                        2)
+        if not gyro_lost:
+            self._gyro_lost_t = None
+        if (gyro_lost and not self._released
+                and c.t - self._gyro_lost_t >= self.gyro_release_s):
+            self._released = True
+            c.thrust_released = True
+            self._raise("УПОР СНЯТ — НЕТ КУРСА: автоматика не держит "
+                        "судно, нужно ручное управление", 2)
+        # --- системы положения
+        if prs_lost and self._prs_lost_t is None:
+            self._prs_lost_t = c.t
+            self._raise("СИСТЕМЫ ПОЛОЖЕНИЯ: нет измерений — удержание "
+                        "по модели, точность падает", 2)
+        if not prs_lost:
+            self._prs_lost_t = None
+
+    def degradation(self):
+        """Снимок деградационного состояния для HMI."""
+        c = self.con
+        hdg_el = (c.t - self._gyro_lost_t
+                  if self._gyro_lost_t is not None else 0.0)
+        pos_el = (c.t - self._prs_lost_t
+                  if self._prs_lost_t is not None else 0.0)
+        # модель роста неопределённости при счислении положения
+        excursion = min(60.0, 0.3 * pos_el ** 1.3) if pos_el > 0 else 0.0
+        if self._released:
+            state = "thrust_released"
+        elif self._gyro_lost_t is not None:
+            state = "heading_dr"
+        elif self._prs_lost_t is not None:
+            state = "position_dr"
+        else:
+            state = "normal"
+        return {
+            "state": state,
+            "hdg_lost": self._gyro_lost_t is not None,
+            "hdg_elapsed": round(hdg_el, 1),
+            "release_in": max(0.0, self.gyro_release_s - hdg_el),
+            "thrust_released": self._released,
+            "pos_lost": self._prs_lost_t is not None,
+            "pos_elapsed": round(pos_el, 1),
+            "excursion_m": round(excursion, 1),
+        }
 
     def _watch_limits(self):
         """Фронтовые аварии: ошибка позиции и consequence."""
@@ -135,6 +202,14 @@ class HMIState:
                 "sensors": {"prs": [bool(f) for f in c.sensors.prs_failed],
                             "gyro": [bool(f) for f in c.sensors.gyro_failed]},
                 "conseq": {"level": c.conseq_level, "text": c.conseq_text},
+                "degrad": self.degradation(),
+                # ветер относительно судна: от носа / от правого борта
+                "wind_rel": {
+                    "bow_kn": round(c.wind.V * KN * float(np.cos(
+                        c.wind.gamma - c.eta[2])), 1),
+                    "stbd_kn": round(c.wind.V * KN * float(np.sin(
+                        c.wind.gamma - c.eta[2])), 1),
+                },
                 "alarms": self.alarms[:12],
                 "unacked": unacked,
                 "alarm_worst": worst,
@@ -150,6 +225,10 @@ class HMIState:
         with self.lock:
             if act == "setpoint":
                 self.con.set_setpoint(cmd["north"], cmd["east"])
+            elif act == "setpoint_jog":
+                # сдвиг заданной точки на (dn, de), м — кнопки N/E/S/W
+                self.con.set_setpoint(self.con.eta_d[0] + float(cmd["dn"]),
+                                      self.con.eta_d[1] + float(cmd["de"]))
             elif act == "heading":
                 self.con.eta_d[2] = np.deg2rad(float(cmd["deg"]))
             elif act == "heading_bump":
@@ -168,6 +247,24 @@ class HMIState:
                         "prs": f"PRS {idx + 1}",
                         "gyro": f"ГИРО {idx + 1}"}[kind]
                 self._raise(f"ИНСТРУКТОР: отказ {name}", 1)
+            elif act == "recover":
+                # возврат агрегата в работу (инструктор)
+                kind, idx = cmd["kind"], int(cmd["idx"])
+                if kind == "thruster":
+                    self.con.thrusters[idx].failed = False
+                    name = f"ДРУ {idx + 1}"
+                elif kind == "prs":
+                    self.con.sensors.prs_failed[idx] = False
+                    name = f"PRS {idx + 1}"
+                else:
+                    self.con.sensors.gyro_failed[idx] = False
+                    name = f"ГИРО {idx + 1}"
+                self._raise(f"ИНСТРУКТОР: {name} возвращён в работу", 0)
+            elif act == "thrust_restore":
+                # оператор вручную возвращает упор после снятия
+                self._released = False
+                self.con.thrust_released = False
+                self._raise("Упор восстановлен оператором", 0)
             elif act == "speed":
                 self.speed = float(cmd["value"])
             elif act == "pause":
@@ -176,6 +273,9 @@ class HMIState:
                 self.con._init_sim()
                 self._limit_state = 0
                 self._conseq_state = 0
+                self._gyro_lost_t = None
+                self._prs_lost_t = None
+                self._released = False
                 self._raise("Сброс симуляции", 0)
             elif act == "limits":
                 self.warn_pos = float(cmd["warn"])

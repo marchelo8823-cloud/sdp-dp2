@@ -75,6 +75,7 @@ class DPConsole:
         self.tau_cmd = np.zeros(3)
         self.ff = np.zeros(3)
         self.paused = False
+        self.thrust_released = False   # аварийное снятие упора (нет курса)
         self.trail = []           # (N, E) для трассы на карте
         self.conseq_text = "…"
         self.conseq_level = 0     # 0 ok, 1 warn, 2 alarm
@@ -122,6 +123,9 @@ class DPConsole:
         self.tau_cmd = self.controller.compute(
             self.eta_d, self.observer.eta_hat, self.observer.nu_hat,
             self.ff, DT)
+        if self.thrust_released:
+            # упор снят: команды движителям 0 %, судно дрейфует
+            self.tau_cmd = np.zeros(3)
         u, alpha, tau_alloc = self.allocator.allocate(self.tau_cmd, DT)
         self.eta, self.nu = self.vessel.step(self.eta, self.nu,
                                              tau_alloc, tau_env, DT)

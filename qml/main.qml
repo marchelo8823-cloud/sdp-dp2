@@ -54,6 +54,10 @@ ApplicationWindow {
     readonly property int statusLevel: {
         var s = Telem.state;
         if (s === undefined || s.t === undefined) return 3;
+        if (s.degrad !== undefined) {
+            if (s.degrad.thrust_released || s.degrad.hdg_lost) return 2;
+            if (s.degrad.pos_lost) return 1;
+        }
         if (s.alarm_worst >= 2 || s.conseq.level >= 2) return 2;
         if (s.alarm_worst === 1 || s.conseq.level === 1 ||
                 s.pos_err > s.warn_pos) return 1;
@@ -297,6 +301,75 @@ ApplicationWindow {
                 DpButton {
                     text: "☀/☾"
                     onClicked: root.dark = !root.dark
+                }
+            }
+        }
+
+        // ---------------- баннер деградации
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 46
+            visible: root.hasData() && Telem.state.degrad.state !== "normal"
+            radius: 6
+            color: root.hasData() && Telem.state.degrad.state === "position_dr"
+                   ? Qt.rgba(1, 0.77, 0.26, 0.10) : Qt.rgba(1, 0.32, 0.32, 0.12)
+            border.color: root.hasData() &&
+                          Telem.state.degrad.state === "position_dr"
+                          ? root.yellow : root.red
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                spacing: 14
+                Text {
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: parent.parent.border.color
+                    text: {
+                        if (!root.hasData()) return "";
+                        var d = Telem.state.degrad;
+                        if (d.state === "heading_dr")
+                            return "СЧИСЛЕНИЕ КУРСА — нет гирокомпасов "
+                                + d.hdg_elapsed.toFixed(1) + " с · упор будет "
+                                + "снят через " + d.release_in.toFixed(1) + " с";
+                        if (d.state === "thrust_released")
+                            return "УПОР СНЯТ — НЕТ КУРСА · команды "
+                                + "движителям 0 %";
+                        if (d.state === "position_dr")
+                            return "УДЕРЖАНИЕ ПО МОДЕЛИ — нет систем "
+                                + "положения " + d.pos_elapsed.toFixed(0)
+                                + " с · вероятный уход до "
+                                + d.excursion_m.toFixed(0) + " м";
+                        return "";
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Text {
+                    Layout.maximumWidth: 480
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 11
+                    color: root.pal.dim
+                    text: {
+                        if (!root.hasData()) return "";
+                        var d = Telem.state.degrad;
+                        if (d.state === "heading_dr")
+                            return "ЧТО ДЕЛАТЬ: проверьте гирокомпасы "
+                                + "(питание, связь). Когда курс вернётся — "
+                                + "упор сам не включится.";
+                        if (d.state === "thrust_released")
+                            return "ЧТО ДЕЛАТЬ: управление вручную. "
+                                + "Гирокомпасы вернулись — «Вернуть упор».";
+                        if (d.state === "position_dr")
+                            return "ЧТО ДЕЛАТЬ: проверьте опорные системы. "
+                                + "Готовьтесь к ручному управлению.";
+                        return "";
+                    }
+                }
+                DpButton {
+                    visible: root.hasData() &&
+                             Telem.state.degrad.thrust_released
+                    text: "Вернуть упор"
+                    onClicked: Telem.cmd({ "action": "thrust_restore" })
                 }
             }
         }
@@ -551,6 +624,33 @@ ApplicationWindow {
                     KV { k: "ROT"; v: root.hasData() ? Telem.state.rot_dpm.toFixed(1) + " °/min" : "—" }
                     KV { k: "Отклонение курса"; v: root.hasData() ? Telem.state.hdg_err_deg.toFixed(1) + "°" : "—" }
                     KV { k: "SOG"; v: root.hasData() ? Telem.state.sog_kn.toFixed(2) + " kn" : "—" }
+                    Text {
+                        text: "ТОЧКА (шаг 1 м)"
+                        color: root.pal.dim
+                        font.pixelSize: 10
+                        font.letterSpacing: 1
+                        topPadding: 4
+                    }
+                    RowLayout {
+                        spacing: 4
+                        DpButton { text: "N"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": 1, "de": 0 }) }
+                        DpButton { text: "S"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": -1, "de": 0 }) }
+                        DpButton { text: "W"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": 0, "de": -1 }) }
+                        DpButton { text: "E"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": 0, "de": 1 }) }
+                    }
+                    Text {
+                        text: "КУРС"
+                        color: root.pal.dim
+                        font.pixelSize: 10
+                        font.letterSpacing: 1
+                    }
+                    RowLayout {
+                        spacing: 4
+                        DpButton { text: "−10°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": -10 }) }
+                        DpButton { text: "−1°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": -1 }) }
+                        DpButton { text: "+1°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": 1 }) }
+                        DpButton { text: "+10°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": 10 }) }
+                    }
                 }
             }
 
@@ -720,6 +820,7 @@ ApplicationWindow {
                     KV { k: "Измеренный"; v: root.hasData() ? Telem.state.wind_meas.speed_kn.toFixed(1) + " kn  " + Telem.state.wind_meas.dir_deg.toFixed(0) + "°" : "—" }
                     KV { k: "Истинный"; v: root.hasData() ? Telem.state.wind_true.speed_kn.toFixed(1) + " kn  " + Telem.state.wind_true.dir_deg.toFixed(0) + "°" : "—" }
                     KV { k: "Волна Hs / Tp"; v: root.hasData() ? Telem.state.hs.toFixed(1) + " м / " + Telem.state.tp.toFixed(0) + " с" : "—" }
+                    KV { k: "От носа / пр. борта"; v: root.hasData() ? Telem.state.wind_rel.bow_kn.toFixed(1) + " / " + Telem.state.wind_rel.stbd_kn.toFixed(1) + " kn" : "—" }
                 }
             }
 
@@ -856,12 +957,37 @@ ApplicationWindow {
                     spacing: 4
                     RowLayout {
                         spacing: 4
-                        DpButton { text: "ДРУ1"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 0 }) }
-                        DpButton { text: "ДРУ2"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 1 }) }
-                        DpButton { text: "ДРУ3"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 2 }) }
-                        DpButton { text: "ДРУ4"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 3 }) }
-                        DpButton { text: "PRS3"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "prs", "idx": 2 }) }
-                        DpButton { text: "ГИРО1"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "gyro", "idx": 0 }) }
+                        // кнопка-переключатель: отказ ↔ возврат агрегата
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.thrusters[0].failed
+                            text: f ? "ДРУ1↩" : "ДРУ1"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 0 } : { "action": "fail", "kind": "thruster", "idx": 0 })
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.thrusters[1].failed
+                            text: f ? "ДРУ2↩" : "ДРУ2"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 1 } : { "action": "fail", "kind": "thruster", "idx": 1 })
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.thrusters[2].failed
+                            text: f ? "ДРУ3↩" : "ДРУ3"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 2 } : { "action": "fail", "kind": "thruster", "idx": 2 })
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.thrusters[3].failed
+                            text: f ? "ДРУ4↩" : "ДРУ4"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 3 } : { "action": "fail", "kind": "thruster", "idx": 3 })
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.sensors.prs[2]
+                            text: f ? "PRS3↩" : "PRS3"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "prs", "idx": 2 } : { "action": "fail", "kind": "prs", "idx": 2 })
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.sensors.gyro[0]
+                            text: f ? "ГИРО1↩" : "ГИРО1"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "gyro", "idx": 0 } : { "action": "fail", "kind": "gyro", "idx": 0 })
+                        }
                     }
                     Text { text: "Ветер: " + windV.value.toFixed(1) + " м/с"; color: root.pal.dim; font.pixelSize: 11 }
                     Slider {
