@@ -1,6 +1,6 @@
 """Наблюдатель СДП: расширенный фильтр Калмана.
 
-Состояния (13):
+Состояния (14):
   xi_w[0:4]  — волновые (WF) состояния по x и y: [h_x, h_x', h_y, h_y']
   eta[4:7]   — НЧ положение [x, y, psi]  (NED)
   nu[7:10]   — скорости body [u, v, r]
@@ -37,6 +37,9 @@ class DPObserver:
 
         self.x = np.zeros(self.n)
         self.P = np.eye(self.n) * 10.0
+        # Калмановская коррекция состояния за последний такт
+        # (нужна адаптивному наблюдателю возмущений)
+        self.last_dx = np.zeros(self.n)
 
     def _f(self, x, tau):
         """Непрерывная динамика f(x, tau)."""
@@ -94,6 +97,7 @@ class DPObserver:
         S = H @ self.P @ H.T + self.R
         K = self.P @ H.T @ np.linalg.inv(S)
         self.x = self.x + K @ innov
+        self.last_dx = K @ innov
         self.P = (np.eye(self.n) - K @ H) @ self.P
 
     @property

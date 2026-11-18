@@ -30,22 +30,54 @@ def default_thrusters():
 def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
         failures=(), t_end=400.0, dt=0.1,
         eta0=(-15.0, 10.0, 20.0), eta_d=(0.0, 0.0, 0.0), seed=42,
-        pid_kw=None, observer_kw=None, ctrl="pid", mpc_kw=None):
+        pid_kw=None, observer_kw=None, ctrl="pid", mpc_kw=None,
+        dob=False, dob_kw=None, wind_schedule=None,
+        setpoint_schedule=None, bias_ff=False,
+        mismatch=1.0, current_force=None,
+        anem_lag=0.0, anem_noise=0.0):
     """Прогон контура с расписанием отказов.
 
     failures — iterable (t_fail, kind, idx):
         kind: "prs" | "gyro" | "thruster"
     ctrl: "pid" | "mpc". pid_kw / observer_kw / mpc_kw — настройки.
+    dob=True — адаптивный RBF-наблюдатель возмущений поверх EKF.
+    wind_schedule — iterable (t, speed, dir_deg): ступеньки ветра.
+    setpoint_schedule — iterable (t, x, y, psi_deg): смена уставки.
+    bias_ff=True — прямая компенсация оценки bias из EKF (классическая
+        схема ДП: ветер + bias в feedforward, интеграл PID — остаток).
+    mismatch — масштаб демпфирования «железа» против модели САУ
+        (рассогласование модели, 1.0 = точная модель).
+    current_force — постоянная сила (Fx, Fy, Mz) в NED, контроллеру
+        неизвестна (течение/дрейф).
+    anem_lag (с) / anem_noise (м/с) — инерционность и шум анемометра;
+        при нулях feedforward получает истинный ветер.
     Возвращает dict с временными рядами.
     """
     vessel = Vessel3DOF()
     waves = WaveForce(hs=hs, tp=tp, heading_deg=wave_heading, seed=seed)
     wind = Wind(speed=wind_speed, dir_deg=wind_dir)
-    observer = DPObserver(vessel, dt=dt, omega0=2 * np.pi / tp,
-                          **(observer_kw or {}))
+    wind_schedule = sorted(wind_schedule or ())
+    setpoint_schedule = sorted(setpoint_schedule or ())
+    if mismatch != 1.0:
+        vessel.D = vessel.D * mismatch   # «железо» ≠ модель САУ
+    # САУ работает по НОМИНАЛЬНОЙ модели (свои экземпляры).
+    # bias_ff требует подвижной модели bias: иначе random walk слишком
+    # жёсткий, оценка возмущения не сходится (типовая настройка ДП).
+    observer_kw = dict(observer_kw or {})
+    if bias_ff:
+        observer_kw.setdefault("q_bias", (1e7, 1e7, 1e8))
+    observer = DPObserver(Vessel3DOF(), dt=dt, omega0=2 * np.pi / tp,
+                          **observer_kw)
+    dob_obs = None
+    if dob:
+        from .disturbance import RBFDisturbanceObserver
+        dob_obs = RBFDisturbanceObserver(**(dob_kw or {}))
+    # Анемометр: измеренные скорость/направление (1-й порядок + шум)
+    rng_anem = np.random.default_rng(seed + 7)
+    V_m, g_m = wind.V, wind.gamma
     if ctrl == "mpc":
         from .mpc import MPCController
-        controller = MPCController(vessel, **(mpc_kw or {}))
+        controller = MPCController(Vessel3DOF(), **(mpc_kw or {}))
         mpc_every = max(1, int(controller.dt / dt))
         # Каскад: позиция (x, y) — от MPC, курс (yaw) — от PID.
         # Канал курса требует быстрого цикла 10 Гц против предела цикла
@@ -69,6 +101,7 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
     log = {"t": np.arange(n) * dt,
            "eta": np.zeros((n, 3)), "eta_hat": np.zeros((n, 3)),
            "tau": np.zeros((n, 3)), "tau_alloc": np.zeros((n, 3)),
+           "ff": np.zeros((n, 3)), "bias": np.zeros((n, 3)),
            "thrust": np.zeros((n, nt)), "azimuth": np.zeros((n, nt))}
 
     tau_cmd = np.zeros(3)
@@ -84,28 +117,69 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
                 thrusters[idx].failed = True
             else:
                 raise ValueError(f"неизвестный тип отказа: {kind}")
+        while wind_schedule and t >= wind_schedule[0][0] - dt / 2:
+            _, spd, d = wind_schedule.pop(0)
+            wind = Wind(speed=spd, dir_deg=d)
+        while setpoint_schedule and t >= setpoint_schedule[0][0] - dt / 2:
+            _, xd, yd, psid = setpoint_schedule.pop(0)
+            eta_d = np.array([xd, yd, np.deg2rad(psid)])
 
         tau_env = Vessel3DOF.R(eta[2]).T @ (waves.force(t) + wind.force())
+        if current_force is not None:
+            tau_env = tau_env + Vessel3DOF.R(eta[2]).T @ np.asarray(
+                current_force, float)
 
+        # Измерение ветра анемометром (инерция + шум)
+        if anem_lag > 0.0 or anem_noise > 0.0:
+            a = dt / max(anem_lag, dt)
+            V_m += a * (wind.V - V_m)
+            g_m += a * (wind.gamma - g_m)
+            if anem_noise > 0.0:
+                V_m += anem_noise * rng_anem.standard_normal() * np.sqrt(dt)
+                g_m += (anem_noise / max(abs(wind.V), 1.0)
+                        * rng_anem.standard_normal() * np.sqrt(dt))
+            ff_wind = Wind(speed=max(V_m, 0.0),
+                           dir_deg=np.rad2deg(g_m)).force()
+        else:
+            ff_wind = wind.force()
+
+        # Структурированная часть возмущения (RBF), body-кадр
+        dob_body = (dob_obs.estimate(observer.nu_hat)
+                    if dob_obs is not None else 0.0)
         p = sensors.read_position(eta)
         h = sensors.read_heading(eta[2])
         if p is not None and h is not None:
-            observer.step(np.array([p[0], p[1], h]), tau_cmd)
+            # EKF видит tau + RBF: его bias отслеживает только остаток
+            observer.step(np.array([p[0], p[1], h]), tau_cmd + dob_body)
+            if dob_obs is not None:
+                R_h = Vessel3DOF.R(observer.eta_hat[2])
+                dob_obs.adapt(observer.nu_hat,
+                              R_h.T @ observer.last_dx[10:13], dt)
         else:
-            observer.x = observer.x + observer._f(observer.x, tau_cmd) * dt
+            observer.x = observer.x + observer._f(
+                observer.x, tau_cmd + dob_body) * dt
+            observer.last_dx[:] = 0.0
+
+        # Feedforward: измеренный ветер + RBF-часть (NED) [+ bias из EKF]
+        ff = ff_wind
+        if dob_obs is not None:
+            ff = ff + Vessel3DOF.R(observer.eta_hat[2]) @ dob_body
+        if bias_ff:
+            ff = ff + observer.bias_hat
 
         if ctrl == "mpc":
             if k % mpc_every == 0:
-                d_hat = wind.force() + observer.bias_hat
+                # bias уже внутри ff, если bias_ff=True — не дублируем
+                d_hat = ff if bias_ff else ff + observer.bias_hat
                 tau_cmd = controller.compute(eta_d, observer.eta_hat,
                                              observer.nu_hat, d_hat)
             # Курс — от PID (быстрый цикл)
             tau_pid = heading_pid.compute(eta_d, observer.eta_hat,
-                                          observer.nu_hat, wind.force(), dt)
+                                          observer.nu_hat, ff, dt)
             tau_cmd[2] = tau_pid[2]
         else:
             tau_cmd = controller.compute(eta_d, observer.eta_hat,
-                                         observer.nu_hat, wind.force(), dt)
+                                         observer.nu_hat, ff, dt)
         u, alpha, tau_alloc = allocator.allocate(tau_cmd, dt)
         eta, nu = vessel.step(eta, nu, tau_alloc, tau_env, dt)
 
@@ -113,6 +187,8 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
         log["eta_hat"][k] = observer.eta_hat
         log["tau"][k] = tau_cmd
         log["tau_alloc"][k] = tau_alloc
+        log["ff"][k] = ff
+        log["bias"][k] = observer.bias_hat
         log["thrust"][k] = u
         log["azimuth"][k] = alpha
 
