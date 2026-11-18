@@ -1,32 +1,41 @@
 """SDP-DP2 — нативный HMI пульта оператора (Qt, стилистика Kongsberg K-Pos).
 
-Настольное приложение (не браузер): то же ядро контура, что и console.py
-(конфигурация C: PID + wind FF + bias FF + RBF-DOB, «несовершенный мир»),
-но интерфейс — нативное окно Qt. Архитектурно готово к судовой
-интеграции: обмен с контроллерами пойдёт по UDP-протоколу HIL (sdp/hil.py),
-HMI останется клиентом телеметрии.
+Настольное приложение (не браузер). Архитектура «как на судне»:
+контур живёт в отдельном процессе (sim_server.py), HMI — чистый
+UDP-клиент телеметрии; тот же протокол позже пойдёт к реальным
+контроллерам ДП. Режимы запуска:
 
-Запуск:        python hmi.py
-Headless-тест: python hmi.py --smoke 300
+  python hmi.py            UDP-клиент; сервер поднимается автоматически
+  python hmi.py --local    ядро внутри процесса (отладка без сети)
+  python hmi.py --smoke N  headless-проверка (offscreen)
+
+Лучшие решения промышленных пультов (K-Pos, NavDP4000, Wärtsilä):
+градиентные циферблаты, затухающая трасса, табулярные цифры,
+аварийный журнал с квитированием, watch circles, пульт инструктора.
 """
+import json
 import math
+import socket
+import subprocess
 import sys
+import time
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
 from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPen,
-                           QPolygonF, QBrush)
+                           QPolygonF, QRadialGradient, QLinearGradient)
 from PySide6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QListWidget, QListWidgetItem,
                                QMainWindow, QPushButton, QSlider, QVBoxLayout,
                                QWidget, QDoubleSpinBox)
 
-from console import DPConsole
+HERE = Path(__file__).parent
 
 # ------------------------------------------------------------------ палитра
 DARK = dict(bg="#0a0f1a", panel="#111a2c", panel2="#0d1524", line="#1e2c47",
-            txt="#c9d6ea", dim="#5f7396")
+            txt="#c9d6ea", dim="#5f7396", disk1="#101a30", disk2="#0a1120")
 DAY = dict(bg="#dfe5ee", panel="#f4f7fb", panel2="#e9eef6", line="#c3cede",
-           txt="#1b2a41", dim="#5b6b84")
+           txt="#1b2a41", dim="#5b6b84", disk1="#eef2f9", disk2="#dde5f0")
 ACC = dict(green="#2fd07c", yellow="#ffc542", red="#ff5252",
            cyan="#39c2d7", blue="#4d8dff", orange="#ff9f43")
 
@@ -35,8 +44,87 @@ SHIP_E = [0.0, 9.0, 9.0, 4.0, -4.0, -9.0, -9.0]
 THR_POS = [(30.0, 0.0), (18.0, 0.0), (-30.0, 6.0), (-30.0, -6.0)]
 
 
-def qcol(hexs):
-    return QColor(hexs)
+def qcol(hexs, alpha=255):
+    c = QColor(hexs)
+    c.setAlpha(alpha)
+    return c
+
+
+# ------------------------------------------------------------------ бэкенды
+class LocalBackend:
+    """Ядро внутри процесса (режим --local)."""
+
+    def __init__(self):
+        from sdp.hmicore import HMIState
+        self._core = HMIState()
+
+    def state(self):
+        return self._core.snapshot()
+
+    def cmd(self, d):
+        self._core.command(d)
+
+
+class UdpBackend:
+    """Клиент UDP к sim_server.py — схема судовой интеграции."""
+
+    def __init__(self, host="127.0.0.1", port=7200):
+        self.server = (host, port)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.setblocking(False)
+        self.tel_port = self.sock.getsockname()[1]
+        self._latest = None
+        self._last_sub = 0.0
+        self._subscribe()
+
+    def _subscribe(self):
+        self.sock.sendto(json.dumps(
+            {"action": "subscribe", "port": self.tel_port}).encode(),
+            self.server)
+        self._last_sub = time.monotonic()
+
+    def state(self):
+        """Свежайший снимок (или None, если сервер молчит)."""
+        if time.monotonic() - self._last_sub > 5.0:
+            self._subscribe()
+        while True:
+            try:
+                data, _ = self.sock.recvfrom(65535)
+            except BlockingIOError:
+                break
+            try:
+                self._latest = json.loads(data.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                pass
+        return self._latest
+
+    def cmd(self, d):
+        try:
+            self.sock.sendto(json.dumps(d).encode(), self.server)
+        except OSError:
+            pass
+
+
+def make_backend(argv):
+    if "--local" in argv:
+        return LocalBackend()
+    be = UdpBackend()
+    deadline = time.monotonic() + 1.2
+    while time.monotonic() < deadline:
+        if be.state() is not None:
+            return be
+        time.sleep(0.05)
+    # сервер не найден — поднимаем свой
+    subprocess.Popen([sys.executable, str(HERE / "sim_server.py")],
+                     cwd=str(HERE),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 4.0
+    while time.monotonic() < deadline:
+        if be.state() is not None:
+            break
+        time.sleep(0.05)
+    return be
 
 
 # ------------------------------------------------------------- базовый виджет
@@ -61,6 +149,13 @@ class Led(QLabel):
         self.style().polish(self)
 
 
+def _disk_gradient(c, R, pal):
+    g = QRadialGradient(c, R)
+    g.setColorAt(0.0, qcol(pal["disk1"]))
+    g.setColorAt(1.0, qcol(pal["disk2"]))
+    return g
+
+
 # --------------------------------------------------------- position plot
 class PositionPlot(QWidget):
     """Компасное кольцо, watch circles, трасса, судно; клик — уставка."""
@@ -74,7 +169,7 @@ class PositionPlot(QWidget):
         self.trail = []
         self.warn_r = 3.0
         self.alarm_r = 5.0
-        self.clicked = None          # callback(north, east)
+        self.clicked = None          # callback(north_off, east_off)
         self.setMinimumSize(380, 380)
 
     def set_palette(self, pal):
@@ -82,7 +177,6 @@ class PositionPlot(QWidget):
         self.update()
 
     def _to_scr(self, n, e, c, R):
-        # north ↑, east →; круг радиуса R вокруг центра c
         return QPointF(c.x() + e / self.range_m * R,
                        c.y() - n / self.range_m * R)
 
@@ -92,64 +186,71 @@ class PositionPlot(QWidget):
         w, h = self.width(), self.height()
         R = min(w, h) / 2 - 14
         c = QPointF(w / 2, h / 2)
-        # диск
+        # диск с градиентом
         p.setPen(QPen(qcol(self.pal["line"]), 1))
-        p.setBrush(qcol(self.pal["panel2"]))
+        p.setBrush(_disk_gradient(c, R, self.pal))
         p.drawEllipse(c, R, R)
         # кольца 1/3, 2/3, 3/3
         p.setBrush(Qt.NoBrush)
-        pen = QPen(qcol(self.pal["line"]), 1, Qt.DashLine)
-        p.setPen(pen)
+        p.setPen(QPen(qcol(self.pal["line"]), 1, Qt.DashLine))
         for f in (1, 2, 3):
             p.drawEllipse(c, R * f / 3, R * f / 3)
-        # риски каждые 10°, подписи каждые 30°
-        p.setPen(QPen(qcol(self.pal["dim"]), 1))
+        # риски и подписи
         fnt = QFont("Menlo", max(7, int(R / 34)))
         p.setFont(fnt)
         for a in range(0, 360, 10):
             r1 = R * (0.95 if a % 30 == 0 else 0.975)
             s, co = math.sin(math.radians(a)), math.cos(math.radians(a))
+            p.setPen(QPen(qcol(self.pal["dim"]), 1))
             p.drawLine(QPointF(c.x() + r1 * s, c.y() - r1 * co),
                        QPointF(c.x() + R * s, c.y() - R * co))
             if a % 30 == 0:
-                p.setPen(QPen(qcol(self.pal["dim"])))
                 p.drawText(QRectF(c.x() + 0.86 * R * s - 20,
                                   c.y() - 0.86 * R * co - 8, 40, 16),
                            Qt.AlignCenter, str(a))
-        # дистанции колец
         for f in (1, 2, 3):
             p.drawText(QPointF(c.x() + 3, c.y() - R * f / 3 - 2),
                        f"{round(self.range_m * f / 3)}")
+        p.setPen(qcol(ACC["red"]))
+        p.setFont(QFont("Menlo", max(8, int(R / 26)), QFont.Bold))
         p.drawText(QPointF(c.x() - 5, c.y() - R - 3), "N")
 
         # watch circles (вокруг уставки = центр)
         for rr, col in ((self.warn_r, ACC["yellow"]),
                         (self.alarm_r, ACC["red"])):
-            p.setPen(QPen(qcol(col), 1.5, Qt.DashLine))
+            p.setPen(QPen(qcol(col, 200), 1.5, Qt.DashLine))
             p.drawEllipse(c, rr / self.range_m * R, rr / self.range_m * R)
-        # уставка
-        p.setPen(Qt.NoPen)
-        p.setBrush(qcol(ACC["red"]))
-        p.drawEllipse(c, 3, 3)
+        # уставка: перекрестие
+        p.setPen(QPen(qcol(ACC["red"]), 1.6))
+        p.drawLine(QPointF(c.x() - 7, c.y()), QPointF(c.x() + 7, c.y()))
+        p.drawLine(QPointF(c.x(), c.y() - 7), QPointF(c.x(), c.y() + 7))
 
-        # трасса
-        if len(self.trail) > 1:
-            p.setPen(QPen(qcol(ACC["blue"]), 1.2))
+        # трасса с затуханием (старые точки прозрачнее)
+        n_tr = len(self.trail)
+        if n_tr > 1:
+            step = 10
             p.setBrush(Qt.NoBrush)
-            path = QPainterPath()
-            path.moveTo(self._to_scr(*self.trail[0], c, R))
-            for pt in self.trail[1:]:
-                path.lineTo(self._to_scr(*pt, c, R))
-            p.drawPath(path)
+            for i0 in range(0, n_tr - 1, step):
+                i1 = min(i0 + step, n_tr - 1)
+                alpha = int(30 + 200 * (i0 / max(n_tr - 1, 1)))
+                p.setPen(QPen(qcol(ACC["blue"], alpha), 1.4))
+                path = QPainterPath()
+                path.moveTo(self._to_scr(*self.trail[i0], c, R))
+                for i in range(i0 + 1, i1 + 1):
+                    path.lineTo(self._to_scr(*self.trail[i], c, R))
+                p.drawPath(path)
 
-        # судно
-        p.save()
+        # судно: свечение + корпус
         sp = self._to_scr(self.err_n, self.err_e, c, R)
-        p.translate(sp)
-        p.rotate(self.hdg)
         sc = R / self.range_m
         poly = QPolygonF([QPointF(e * sc, -n * sc)
                           for n, e in zip(SHIP_N, SHIP_E)])
+        p.save()
+        p.translate(sp)
+        p.rotate(self.hdg)
+        p.setPen(QPen(qcol(ACC["blue"], 70), 7))
+        p.setBrush(Qt.NoBrush)
+        p.drawPolygon(poly)
         p.setPen(QPen(qcol(self.pal["bg"]), 1))
         p.setBrush(qcol(ACC["blue"]))
         p.drawPolygon(poly)
@@ -189,7 +290,7 @@ class Compass(QWidget):
         R = min(w, h) / 2 - 10
         c = QPointF(w / 2, h / 2)
         p.setPen(QPen(qcol(self.pal["line"]), 1.5))
-        p.setBrush(qcol(self.pal["panel2"]))
+        p.setBrush(_disk_gradient(c, R, self.pal))
         p.drawEllipse(c, R, R)
         for a in range(0, 360, 5):
             big = a % 30 == 0
@@ -200,18 +301,23 @@ class Compass(QWidget):
             p.drawLine(QPointF(c.x() + r1 * s, c.y() - r1 * co),
                        QPointF(c.x() + 0.99 * R * s, c.y() - 0.99 * R * co))
             if a % 90 == 0:
+                col = ACC["red"] if a == 0 else self.pal["txt"]
+                p.setPen(qcol(col))
                 p.setFont(QFont("Menlo", max(9, int(R / 9)), QFont.Bold))
                 p.drawText(QRectF(c.x() + 0.68 * R * s - 20,
                                   c.y() - 0.68 * R * co - 10, 40, 20),
                            Qt.AlignCenter, "NESW"[a // 90])
-        # жучок уставки
+        # жучок уставки со свечением
         p.save()
         p.translate(c)
         p.rotate(self.hdg_d)
+        bug = QPolygonF([QPointF(0, -R - 2), QPointF(6, -R + 12),
+                         QPointF(-6, -R + 12)])
+        p.setPen(QPen(qcol(ACC["green"], 80), 5))
+        p.drawPolyline(bug)
         p.setPen(Qt.NoPen)
         p.setBrush(qcol(ACC["green"]))
-        p.drawPolygon(QPolygonF([QPointF(0, -R - 2), QPointF(6, -R + 12),
-                                 QPointF(-6, -R + 12)]))
+        p.drawPolygon(bug)
         p.restore()
         # судно
         p.save()
@@ -251,7 +357,7 @@ class WindRose(QWidget):
         R = min(w, h) / 2 - 8
         c = QPointF(w / 2, h / 2)
         p.setPen(QPen(qcol(self.pal["line"]), 1.2))
-        p.setBrush(qcol(self.pal["panel2"]))
+        p.setBrush(_disk_gradient(c, R, self.pal))
         p.drawEllipse(c, R, R)
         p.setFont(QFont("Menlo", max(7, int(R / 12))))
         for a in range(0, 360, 30):
@@ -259,6 +365,8 @@ class WindRose(QWidget):
             p.setPen(QPen(qcol(self.pal["dim"]), 1))
             p.drawLine(QPointF(c.x() + 0.9 * R * s, c.y() - 0.9 * R * co),
                        QPointF(c.x() + R * s, c.y() - R * co))
+            col = ACC["red"] if a == 0 else self.pal["dim"]
+            p.setPen(qcol(col))
             p.drawText(QRectF(c.x() + 0.72 * R * s - 15,
                               c.y() - 0.72 * R * co - 8, 30, 16),
                        Qt.AlignCenter, str(a))
@@ -266,6 +374,8 @@ class WindRose(QWidget):
         p.save()
         p.translate(c)
         p.rotate(self.dir_deg)
+        p.setPen(QPen(qcol(ACC["cyan"], 70), 6))
+        p.drawLine(QPointF(0, 0.75 * R), QPointF(0, 0.12 * R))
         p.setPen(QPen(qcol(ACC["cyan"]), 2))
         p.setBrush(qcol(ACC["cyan"]))
         p.drawLine(QPointF(0, 0.75 * R), QPointF(0, 0.12 * R))
@@ -289,11 +399,18 @@ class ThrusterMimic(QWidget):
         self.pal = pal
         self.update()
 
+    @staticmethod
+    def _load_col(u_pct, failed):
+        if failed:
+            return ACC["red"]
+        a = min(abs(u_pct) / 100.0, 1.0)
+        return ACC["green"] if a < 0.6 else ACC["yellow"] if a < 0.9 \
+            else ACC["orange"]
+
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        # hull: x = ly (east), y = -lx (north up), полуразмеры 40 м
         sx = (w - 70) / 20.0
         sy = (h - 60) / 88.0
         cx, cy = w / 2 - 30, h / 2
@@ -303,14 +420,16 @@ class ThrusterMimic(QWidget):
 
         hull = QPolygonF([scr(44, 0), scr(20, 9), scr(-34, 9), scr(-44, 4),
                           scr(-44, -4), scr(-34, -9), scr(20, -9)])
+        grad = QLinearGradient(scr(44, 0), scr(-44, 0))
+        grad.setColorAt(0.0, qcol(self.pal["disk1"]))
+        grad.setColorAt(1.0, qcol(self.pal["disk2"]))
         p.setPen(QPen(qcol(self.pal["dim"]), 1.5))
-        p.setBrush(qcol(self.pal["panel2"]))
+        p.setBrush(grad)
         p.drawPolygon(hull)
 
         for (lx, ly), (alpha, u, failed) in zip(THR_POS, self.thr):
             pos = scr(lx, ly)
-            col = qcol(ACC["red"] if failed else ACC["blue"])
-            # диск
+            col = qcol(self._load_col(u, failed))
             p.setPen(QPen(col, 1.5))
             p.setBrush(qcol(self.pal["panel"]))
             p.drawEllipse(pos, 13, 13)
@@ -364,7 +483,6 @@ class Trends(QWidget):
         series = ((1, 8.0, ACC["orange"]), (2, 45.0, ACC["cyan"]),
                   (3, 400.0, ACC["green"]))
         for idx, mx, col in series:
-            p.setPen(QPen(qcol(col), 1.6))
             path = QPainterPath()
             for i, row in enumerate(self.data):
                 x = i / (n - 1) * w
@@ -373,20 +491,30 @@ class Trends(QWidget):
                     path.moveTo(x, y)
                 else:
                     path.lineTo(x, y)
+            # заливка под кривой
+            fill = QPainterPath(path)
+            fill.lineTo(w, h)
+            fill.lineTo(0, h)
+            fill.closeSubpath()
+            p.setPen(Qt.NoPen)
+            p.setBrush(qcol(col, 28))
+            p.drawPath(fill)
+            p.setPen(QPen(qcol(col), 1.6))
+            p.setBrush(Qt.NoBrush)
             p.drawPath(path)
         p.end()
 
 
 # ------------------------------------------------------------- главное окно
 class HMIWindow(QMainWindow):
-    def __init__(self, headless=False):
+    def __init__(self, backend):
         super().__init__()
         self.setWindowTitle("SDP-DP2 — Пульт оператора ДП")
-        self.con = DPConsole()
-        self.speed = 5
+        self.backend = backend
         self.pal = DARK
         self._trail_last = -1.0
-        self._headless = headless
+        self._alarms_key = None
+        self._last_state = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -400,7 +528,8 @@ class HMIWindow(QMainWindow):
         logo.setObjectName("logo")
         mode = QLabel("AUTO POSITION")
         mode.setObjectName("mode")
-        self.clock = QLabel("T+00:00 · 5×")
+        self.clock = QLabel("T+00:00")
+        self.clock.setObjectName("clock")
         self.status = QLabel("DP STATUS: NORMAL")
         self.status.setObjectName("lampOk")
         self.conseq = QLabel("…")
@@ -498,7 +627,6 @@ class HMIWindow(QMainWindow):
         bot.setColumnStretch(2, 2)
 
         self.trend_data = []
-        self._alarm_count = 0
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -542,7 +670,9 @@ class HMIWindow(QMainWindow):
                                  ("PRS3", "prs", 2), ("ГИРО1", "gyro", 0)):
             b = QPushButton(label)
             b.setObjectName("failBtn")
-            b.clicked.connect(lambda _c, k=kind, i=idx: self.con.inject(k, i))
+            b.clicked.connect(
+                lambda _c, k=kind, i=idx:
+                self.backend.cmd({"action": "fail", "kind": k, "idx": i}))
             row.addWidget(b)
         lay.addLayout(row)
 
@@ -557,7 +687,6 @@ class HMIWindow(QMainWindow):
             sl = QSlider(Qt.Horizontal)
             sl.setRange(int(mn / step), int(mx / step))
             sl.setValue(int(val / step))
-            sl.setProperty("step", step)
             sl.valueChanged.connect(
                 lambda v, k=key, l=lbl, n=name, f=fmt, s=step:
                 self._slider(k, l, n, f, s, v))
@@ -567,11 +696,14 @@ class HMIWindow(QMainWindow):
 
         row2 = QHBoxLayout()
         self.b_pause = QPushButton("Пауза")
-        self.b_pause.clicked.connect(self.toggle_pause)
+        self.b_pause.clicked.connect(
+            lambda: self.backend.cmd({"action": "pause"}))
         b_hm = QPushButton("Курс −10°")
-        b_hm.clicked.connect(lambda: self.con.bump_heading(-10))
+        b_hm.clicked.connect(
+            lambda: self.backend.cmd({"action": "heading_bump", "d_deg": -10}))
         b_hp = QPushButton("Курс +10°")
-        b_hp.clicked.connect(lambda: self.con.bump_heading(10))
+        b_hp.clicked.connect(
+            lambda: self.backend.cmd({"action": "heading_bump", "d_deg": 10}))
         b_rst = QPushButton("Сброс")
         b_rst.setObjectName("dangerBtn")
         b_rst.clicked.connect(self.reset)
@@ -588,7 +720,7 @@ class HMIWindow(QMainWindow):
         self.sp_alarm.setRange(2, 80)
         self.sp_alarm.setValue(5)
         b_wc = QPushButton("Задать")
-        b_wc.clicked.connect(lambda: self._set_watch())
+        b_wc.clicked.connect(self._set_watch)
         for w_ in (self.sp_warn, self.sp_alarm, b_wc):
             row3.addWidget(w_)
         lay.addLayout(row3)
@@ -597,43 +729,37 @@ class HMIWindow(QMainWindow):
     def _slider(self, key, lbl, name, fmt, step, v):
         val = v * step
         lbl.setText(name + ": " + fmt.format(val))
-        if key == "wind_v":
-            self.con.set_wind(val, self.sliders["wind_d"][0].value()
-                              * self.sliders["wind_d"][4])
-        elif key == "wind_d":
-            self.con.set_wind(self.sliders["wind_v"][0].value()
-                              * self.sliders["wind_v"][4], val)
+        if key in ("wind_v", "wind_d"):
+            self.backend.cmd({"action": "wind",
+                              "speed_ms": self.sliders["wind_v"][0].value()
+                              * self.sliders["wind_v"][4],
+                              "dir_deg": self.sliders["wind_d"][0].value()
+                              * self.sliders["wind_d"][4]})
         elif key == "hs":
-            self.con.set_hs(val)
+            self.backend.cmd({"action": "hs", "hs": val})
         elif key == "speed":
-            self.speed = int(val)
+            self.backend.cmd({"action": "speed", "value": val})
 
     def _set_watch(self):
-        self.plot.warn_r = self.sp_warn.value()
-        self.plot.alarm_r = self.sp_alarm.value()
-        self.plot.update()
+        self.backend.cmd({"action": "limits",
+                          "warn": self.sp_warn.value(),
+                          "alarm": self.sp_alarm.value()})
 
     def set_setpoint_rel(self, n_off, e_off):
-        # клик по карте: смещение относительно текущей уставки
-        self.con.set_setpoint(self.con.eta_d[0] + n_off,
-                              self.con.eta_d[1] + e_off)
-
-    def toggle_pause(self):
-        self.con.paused = not self.con.paused
-        self.b_pause.setText("Пуск" if self.con.paused else "Пауза")
+        s = self._last_state
+        if s is None:
+            return
+        self.backend.cmd({"action": "setpoint",
+                          "north": s["eta_d"][0] + n_off,
+                          "east": s["eta_d"][1] + e_off})
 
     def reset(self):
-        self.con._init_sim()
         self.plot.trail.clear()
         self.trend_data.clear()
-        self._alarm_count = 0
-        self.b_pause.setText("Пауза")
+        self.backend.cmd({"action": "reset"})
 
     def ack(self):
-        self._alarm_count = 0
-        self.albadge.setText("0")
-        self.albadge.setObjectName("badgeZero")
-        self._restyle(self.albadge)
+        self.backend.cmd({"action": "ack"})
 
     def toggle_theme(self):
         self.pal = DAY if self.pal is DARK else DARK
@@ -652,6 +778,7 @@ class HMIWindow(QMainWindow):
             #logo {{ color:{ACC['cyan']}; font-size:16px; font-weight:bold; }}
             #mode {{ background:{ACC['blue']}; color:white; padding:2px 10px;
                 border-radius:3px; font-weight:600; }}
+            #clock {{ font-family: Menlo; font-weight:600; }}
             #lampOk {{ color:{ACC['green']}; border:1px solid {ACC['green']};
                 padding:2px 10px; border-radius:3px; font-weight:700; }}
             #lampWarn {{ color:{ACC['yellow']}; border:1px solid {ACC['yellow']};
@@ -672,7 +799,7 @@ class HMIWindow(QMainWindow):
             #failBtn {{ border-color:{ACC['orange']}; }}
             #dangerBtn {{ border-color:{ACC['red']}; color:{ACC['red']}; }}
             #dimLabel {{ color:{pal['dim']}; }}
-            #kvValue {{ font-weight:600; }}
+            #kvValue {{ font-weight:600; font-family: Menlo; }}
             #led {{ color:{ACC['green']}; }}
             #led[on="false"] {{ color:{ACC['red']}; }}
             QListWidget {{ background:{pal['panel2']};
@@ -695,23 +822,27 @@ class HMIWindow(QMainWindow):
 
     # ------------------------------------------------ главный цикл
     def tick(self):
-        con = self.con
-        if not con.paused:
-            for _ in range(self.speed):
-                con.step()
-            if int(con.t / 0.1) % 50 == 0:
-                con.update_consequence()
+        s = self.backend.state()
+        self._last_state = s
+        if s is None:
+            if self.status.objectName() != "lampAlarm":
+                self.status.setObjectName("lampAlarm")
+                self._restyle(self.status)
+            self.status.setText("НЕТ СВЯЗИ С СЕРВЕРОМ")
+            return
 
         # часы
-        mm = int(con.t // 60)
-        ss = int(con.t % 60)
+        mm = int(s["t"] // 60)
+        ss = int(s["t"] % 60)
         self.clock.setText(
-            f"T+{mm:02d}:{ss:02d}{' ⏸' if con.paused else ''} · {self.speed}×")
+            f"T+{mm:02d}:{ss:02d}{' ⏸' if s['paused'] else ''}"
+            f" · {s['speed']:.0f}×")
 
         # статус
-        if con.conseq_level >= 2:
+        if s["alarm_worst"] >= 2 or s["conseq"]["level"] >= 2:
             lamp, txt = "lampAlarm", "DP STATUS: ALARM"
-        elif con.conseq_level == 1 or con.pos_err > self.plot.warn_r:
+        elif s["alarm_worst"] == 1 or s["conseq"]["level"] == 1 \
+                or s["pos_err"] > s["warn_pos"]:
             lamp, txt = "lampWarn", "DP STATUS: WARNING"
         else:
             lamp, txt = "lampOk", "DP STATUS: NORMAL"
@@ -719,87 +850,93 @@ class HMIWindow(QMainWindow):
             self.status.setObjectName(lamp)
             self._restyle(self.status)
         self.status.setText(txt)
-        cq_name = ["conseqOk", "conseqWarn", "conseqAlarm"][con.conseq_level]
+        cq_name = ["conseqOk", "conseqWarn", "conseqAlarm"][s["conseq"]["level"]]
         if self.conseq.objectName() != cq_name:
             self.conseq.setObjectName(cq_name)
             self._restyle(self.conseq)
-        self.conseq.setText(con.conseq_text)
+        self.conseq.setText(s["conseq"]["text"])
 
         # position plot
-        new_range = min(500.0, max(30.0, 1.5 * con.pos_err,
-                                   1.7 * self.plot.alarm_r))
+        new_range = min(500.0, max(30.0, 1.5 * s["pos_err"],
+                                   1.7 * s["alarm_pos"]))
         if abs(new_range - self.plot.range_m) / self.plot.range_m > 0.15:
             self.plot.range_m = new_range
             self.range_lbl.setText(f"range {round(new_range)} м")
-        self.plot.err_n = con.eta[0] - con.eta_d[0]
-        self.plot.err_e = con.eta[1] - con.eta_d[1]
-        self.plot.hdg = math.degrees(con.eta[2])
-        if con.t - self._trail_last > 1.0:
-            self.plot.trail.append((self.plot.err_n, self.plot.err_e))
+        self.plot.err_n = s["err_n"]
+        self.plot.err_e = s["err_e"]
+        self.plot.hdg = s["hdg_deg"]
+        self.plot.warn_r = s["warn_pos"]
+        self.plot.alarm_r = s["alarm_pos"]
+        if s["t"] - self._trail_last > 1.0:
+            if self._trail_last >= 0 and s["t"] < self._trail_last:
+                self.plot.trail.clear()          # был сброс на сервере
+            self.plot.trail.append((s["err_n"], s["err_e"]))
             if len(self.plot.trail) > 600:
                 self.plot.trail.pop(0)
-            self._trail_last = con.t
+            self._trail_last = s["t"]
         self.plot.update()
 
         # compass
-        self.compass.hdg = math.degrees(con.eta[2])
-        self.compass.hdg_d = math.degrees(con.eta_d[2])
+        self.compass.hdg = s["hdg_deg"]
+        self.compass.hdg_d = s["hdg_d_deg"]
         self.compass.update()
-        self.kv_rot.setText(f"{math.degrees(con.nu[2]) * 60:.1f} °/min")
-        self.kv_hdev.setText(f"{con.hdg_err_deg:.1f}°")
-        self.kv_sog.setText(f"{math.hypot(*con.nu[:2]) * 1.94384:.2f} kn")
+        self.kv_rot.setText(f"{s['rot_dpm']:.1f} °/min")
+        self.kv_hdev.setText(f"{s['hdg_err_deg']:.1f}°")
+        self.kv_sog.setText(f"{s['sog_kn']:.2f} kn")
+        self.kv_gyro.setText("  ".join(
+            f"G{i + 1}:{'ОТКАЗ' if f else 'OK'}"
+            for i, f in enumerate(s["sensors"]["gyro"])))
 
         # thrusters + resultant
-        thr = []
-        fx = fy = 0.0
-        for t_ in con.thrusters:
-            u_pct = t_.u / t_.t_max * 100.0
-            thr.append((math.degrees(t_.alpha), u_pct, t_.failed))
-            if not t_.failed:
-                fx += t_.u * math.cos(t_.alpha) / 1000.0
-                fy += t_.u * math.sin(t_.alpha) / 1000.0
-        self.mimic.thr = thr
+        self.mimic.thr = [(t_["alpha_deg"], t_["u_pct"], t_["failed"])
+                          for t_ in s["thrusters"]]
         self.mimic.update()
-        self.kv_resf.setText(f"{math.hypot(fx, fy):.0f} kN")
-        self.kv_resd.setText(f"{math.degrees(math.atan2(fy, fx)):.1f}°")
-        mz = sum(t_.u * (p[0] * math.sin(t_.alpha) - p[1] * math.cos(t_.alpha))
-                 for t_, p in zip(con.thrusters, THR_POS) if not t_.failed)
-        self.kv_resm.setText(f"{mz / 1000.0:.0f} kNm")
+        r = s["resultant"]
+        self.kv_resf.setText(f"{r['force_kn']:.0f} kN")
+        self.kv_resd.setText(f"{r['dir_deg']:.1f}°")
+        self.kv_resm.setText(f"{r['moment_knm']:.0f} kNm")
 
         # wind / sensors
-        self.windrose.dir_deg = math.degrees(con.wind.gamma)
+        self.windrose.dir_deg = s["wind_true"]["dir_deg"]
         self.windrose.update()
-        vkn = con.wind.V * 1.94384
-        self.kv_windt.setText(f"{vkn:.1f} kn  {math.degrees(con.wind.gamma):.0f}°")
-        vmkn = con.V_m * 1.94384
-        self.kv_windm.setText(f"{vmkn:.1f} kn  {math.degrees(con.g_m):.0f}°")
-        self.kv_wave.setText(f"{con.hs:.1f} м / {con.tp:.0f} с")
-        for (led, st), failed in zip(self.prs_leds, con.sensors.prs_failed):
+        self.kv_windt.setText(f"{s['wind_true']['speed_kn']:.1f} kn  "
+                              f"{s['wind_true']['dir_deg']:.0f}°")
+        self.kv_windm.setText(f"{s['wind_meas']['speed_kn']:.1f} kn  "
+                              f"{s['wind_meas']['dir_deg']:.0f}°")
+        self.kv_wave.setText(f"{s['hs']:.1f} м / {s['tp']:.0f} с")
+        for (led, st), failed in zip(self.prs_leds, s["sensors"]["prs"]):
             led.set_on(not failed)
             st.setText("ОТКАЗ" if failed else "OK")
-        for (led, st), failed in zip(self.gyro_leds, con.sensors.gyro_failed):
+        for (led, st), failed in zip(self.gyro_leds, s["sensors"]["gyro"]):
             led.set_on(not failed)
             st.setText("ОТКАЗ" if failed else "OK")
-        self.kv_perr.setText(f"{con.pos_err:.2f} м")
-        self.kv_perr_ne.setText(f"{con.eta[0] - con.eta_d[0]:.2f} / "
-                                f"{con.eta[1] - con.eta_d[1]:.2f} м")
-        b = con.observer.bias_hat
-        self.kv_bias.setText(f"{math.hypot(b[0], b[1]) / 1e3:.1f} kN")
+        self.kv_perr.setText(f"{s['pos_err']:.2f} м")
+        self.kv_perr_ne.setText(f"{s['err_n']:.2f} / {s['err_e']:.2f} м")
+        self.kv_bias.setText(f"{s['bias_kn']:.1f} kN")
 
         # alarms
-        if len(con.alarms) != self._alarm_count and len(con.alarms) > 0:
-            new = con.alarms[self._alarm_count:]
-            for a in new:
-                QListWidgetItem(a, self.alarms)
-            self._alarm_count = len(con.alarms)
-            self.alarms.scrollToBottom()
-            self.albadge.setText(str(self._alarm_count))
-            self.albadge.setObjectName("badgeHot")
+        key = tuple((a["id"], a["acked"]) for a in s["alarms"])
+        if key != self._alarms_key:
+            self._alarms_key = key
+            self.alarms.clear()
+            for a in s["alarms"]:
+                it = QListWidgetItem(f"{a['t']:6.0f}с  {a['text']}")
+                col = [self.pal["dim"], ACC["yellow"], ACC["red"]][a["level"]]
+                if a["acked"]:
+                    col = self.pal["dim"]
+                it.setForeground(qcol(col))
+                self.alarms.addItem(it)
+        unacked = s["unacked"]
+        self.albadge.setText(str(unacked))
+        name = "badgeHot" if unacked else "badgeZero"
+        if self.albadge.objectName() != name:
+            self.albadge.setObjectName(name)
             self._restyle(self.albadge)
 
         # trends
-        self.trend_data.append(
-            (con.t, con.pos_err, vkn, abs(math.hypot(fx, fy)) * 10))
+        self.trend_data.append((s["t"], s["pos_err"],
+                                s["wind_meas"]["speed_kn"],
+                                abs(r["force_kn"]) * 10))
         if len(self.trend_data) > 2400:
             self.trend_data.pop(0)
         self.trends.data = self.trend_data
@@ -808,33 +945,48 @@ class HMIWindow(QMainWindow):
 
 # ------------------------------------------------------------------ запуск
 
-def run_gui():
-    app = QApplication(sys.argv)
+def run_gui(argv):
+    app = QApplication(argv)
     app.setStyle("Fusion")
-    w = HMIWindow()
+    backend = make_backend(argv)
+    w = HMIWindow(backend)
     w.show()
     sys.exit(app.exec())
 
 
 def smoke(n_ticks=300):
-    """Headless: offscreen-платформа, прогон цикла без показа окна."""
+    """Headless: offscreen + UDP-сервер в подпроцессе, прогон без окна."""
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication(sys.argv)
-    w = HMIWindow(headless=True)
-    for k in range(n_ticks):
-        w.tick()
-        if k == 100:
-            w.con.inject("thruster", 3)
-        if k == 200:
-            w.con.set_wind(15.0, 120.0)
-            w.toggle_theme()
-            w.toggle_theme()
-        app.processEvents()
-    import numpy as np
-    assert np.all(np.isfinite(w.con.eta)), "NaN в состоянии"
-    print(f"hmi smoke OK: t={w.con.t:.0f} с, ошибка {w.con.pos_err:.2f} м, "
-          f"banner: {w.con.conseq_text}, алармов: {w._alarm_count}")
+    srv = subprocess.Popen([sys.executable, str(HERE / "sim_server.py")],
+                           cwd=str(HERE))
+    try:
+        time.sleep(1.0)
+        app = QApplication(sys.argv)
+        be = UdpBackend()
+        deadline = time.monotonic() + 5.0
+        while be.state() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert be.state() is not None, "сервер не отвечает"
+        w = HMIWindow(be)
+        for k in range(n_ticks):
+            w.tick()
+            if k == 100:
+                be.cmd({"action": "fail", "kind": "thruster", "idx": 3})
+            if k == 200:
+                be.cmd({"action": "wind", "speed_ms": 15.0, "dir_deg": 120.0})
+                w.toggle_theme()
+                w.toggle_theme()
+            app.processEvents()
+            time.sleep(0.01)
+        s = be.state()
+        assert s is not None and math.isfinite(s["pos_err"])
+        assert any(t_["failed"] for t_ in s["thrusters"]), "отказ не дошёл"
+        print(f"hmi smoke OK (UDP): t={s['t']:.0f} с, "
+              f"ошибка {s['pos_err']:.2f} м, "
+              f"banner: {s['conseq']['text']}, алармов: {len(s['alarms'])}")
+    finally:
+        srv.terminate()
 
 
 if __name__ == "__main__":
@@ -843,4 +995,4 @@ if __name__ == "__main__":
         n = int(sys.argv[i + 1]) if i + 1 < len(sys.argv) else 300
         smoke(n)
     else:
-        run_gui()
+        run_gui(sys.argv)

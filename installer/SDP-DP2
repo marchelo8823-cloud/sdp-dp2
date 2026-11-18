@@ -94,7 +94,7 @@ while true; do
     echo "  6) compare_dob.py         Оценка возмущений: bias FF + RBF-DOB (долго)"
     echo "  7) console.py             DP-пульт: интерактивная консоль оператора (GUI)"
     echo "  8) webhmi.py              Web-HMI: пульт в браузере, стилистика K-Pos"
-    echo "  9) hmi.py                 Нативный HMI (Qt): пульт оператора, стилистика K-Pos"
+    echo "  9) hmi.py                 Нативный HMI (Qt): UDP-клиент к sim_server, K-Pos"
     echo "  q) Выход"
     echo
     read -r -n 1 -p "Выбор: " ch
