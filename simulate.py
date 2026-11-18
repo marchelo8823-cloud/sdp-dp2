@@ -8,6 +8,9 @@ t = 300 с — отказ кормового правого движителя (
 азимутов и ограничением скорости поворота. После отказа движителя
 конфигурация перестраивается автоматически.
 
+Consequence analysis (1 Гц): последствия «ещё одного» отказа —
+загрузка оставшихся движителей и предельный ветер после худшего отказа.
+
 Среда: Hs = 2 м, Tp = 7 с, ветер 10 м/с, течение 0.3 м/с.
 """
 import numpy as np
@@ -20,6 +23,7 @@ from sdp.environment import WaveForce, Wind
 from sdp.observer import DPObserver
 from sdp.controller import PIDController
 from sdp.allocation import AzimuthThruster, AzimuthAllocator
+from sdp.consequence import ConsequenceAnalyzer
 from sdp.redundancy import SensorSuite
 
 DT = 0.1
@@ -50,6 +54,7 @@ def main():
     ]
     allocator = AzimuthAllocator(thrusters)
     sensors = SensorSuite()
+    consequence = ConsequenceAnalyzer(thrusters, margin=0.1)
 
     eta = np.array([-15.0, 10.0, np.deg2rad(20.0)])
     nu = np.zeros(3)
@@ -63,6 +68,9 @@ def main():
     t_axis = np.arange(n) * DT
 
     tau_cmd = np.zeros(3)
+    log["ca_util"] = np.full((n, NT), np.nan)
+    log["ca_wind"] = np.full(n, np.nan)
+    ca_res, ca_wind, prev_bad = {}, np.nan, set()
     for k in range(n):
         t = k * DT
         # --- Отказы по сценарию DP-2 ---
@@ -94,6 +102,25 @@ def main():
 
         # --- Судно ---
         eta, nu = vessel.step(eta, nu, tau_alloc, tau_env, DT)
+
+        # --- Consequence analysis (1 Гц): переживём ли ещё один отказ ---
+        if k % 10 == 0:
+            tau_load = Vessel3DOF.R(eta[2]).T @ (wind.force()
+                                                 + observer.bias_hat)
+            ca_res = consequence.check(tau_load)
+            bad = {j for j, (ok, _) in ca_res.items() if not ok}
+            for j in sorted(bad - prev_bad):
+                print(f"t={t:6.1f} с  CONSEQUENCE ALARM: отказ ДРУ {j+1} "
+                      f"приведёт к потере позиции")
+            for j in sorted(prev_bad - bad):
+                print(f"t={t:6.1f} с  CONSEQUENCE OK: отказ ДРУ {j+1} "
+                      f"снова переносим")
+            prev_bad = bad
+            # Предельный ветер после худшего оставшегося отказа
+            ca_wind = consequence.survivable_wind(30.0, hs=2.0)
+        for j, (_, util) in ca_res.items():
+            log["ca_util"][k, j] = util
+        log["ca_wind"][k] = ca_wind
 
         log["eta"][k] = eta
         log["eta_hat"][k] = observer.eta_hat
@@ -165,6 +192,33 @@ def main():
     plt.tight_layout()
     plt.savefig("results_dp2.png", dpi=150)
     print("Графики сохранены: results_dp2.png")
+
+    # --- График consequence analysis ---
+    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+    fig2.suptitle("Consequence analysis (запас к нагрузке 10 %)")
+
+    for j in range(NT):
+        ax1.plot(t_axis, log["ca_util"][:, j], label=f"отказ ДРУ {j+1}")
+    ax1.axhline(1.0, color="r", lw=1.5, label="предел 100 %")
+    ax1.axhline(0.8, color="orange", ls="--", lw=1, label="предупреждение 80 %")
+    ax1.axvline(300, color="r", ls=":", alpha=0.6)
+    ax1.set_ylabel("загрузка оставшихся, д.е.")
+    ax1.set_title("Загрузка движителей при ещё одном единичном отказе")
+    ax1.grid(True); ax1.legend(loc="center right")
+
+    ax2.plot(t_axis, log["ca_wind"], "b-", lw=1.5,
+             label="предельный ветер после худшего отказа")
+    ax2.axhline(10.0, color="r", ls="--", lw=1.2,
+                label="текущий ветер (10 м/с)")
+    ax2.axvline(300, color="r", ls=":", alpha=0.6)
+    ax2.set_xlabel("t, с"); ax2.set_ylabel("ветер, м/с")
+    ax2.set_title("Запас по среде: предельный ветер при ещё одном отказе "
+                  "(направление 30°, Hs = 2 м)")
+    ax2.grid(True); ax2.legend(loc="center right")
+
+    plt.tight_layout()
+    plt.savefig("consequence.png", dpi=150)
+    print("График сохранён: consequence.png")
 
     # --- Итоговые метрики ---
     i0 = int(200 / DT)
