@@ -12,8 +12,10 @@ ApplicationWindow {
     id: root
     objectName: "sdpHmi"
     visible: true
-    width: 1440
-    height: 880
+    width: 1680
+    height: 1000
+    minimumWidth: 1280
+    minimumHeight: 780
     title: "SDP-DP2 — Пульт оператора ДП"
 
     // ---------------------------------------------------------- тема
@@ -40,6 +42,7 @@ ApplicationWindow {
     property real range: 100
     property var trail: []
     property var trend: []
+    property real thrustSmooth: -1
     property real lastTrailT: -1
 
     readonly property var shipN: [38, 12, -30, -38, -38, -30, 12]
@@ -80,8 +83,11 @@ ApplicationWindow {
                                             1.7 * s.alarm_pos));
             if (Math.abs(nr - root.range) / root.range > 0.15)
                 root.range = nr;
+            var thrust = Math.abs(s.resultant.force_kn) * 10;
+            if (root.thrustSmooth < 0) root.thrustSmooth = thrust;
+            root.thrustSmooth += 0.03 * (thrust - root.thrustSmooth);
             root.trend.push([s.pos_err, s.wind_meas.speed_kn,
-                             Math.abs(s.resultant.force_kn) * 10]);
+                             root.thrustSmooth]);
             if (root.trend.length > 2400) root.trend.shift();
             posPlot.requestPaint();
             compass.requestPaint();
@@ -375,21 +381,19 @@ ApplicationWindow {
         }
 
         // ---------------- основная сетка
-        GridLayout {
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            columns: 4
-            rowSpacing: 6
-            columnSpacing: 6
+            spacing: 6
 
             // ===== position plot
             DpPanel {
                 title: "Position plot"
                 rightTitle: "range " + Math.round(root.range) + " м"
-                Layout.rowSpan: 2
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 3
+                Layout.preferredWidth: 440
+                Layout.minimumWidth: 320
                 Canvas {
                     id: posPlot
                     anchors.fill: parent
@@ -532,7 +536,8 @@ ApplicationWindow {
                 title: "Heading"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 2
+                Layout.preferredWidth: 290
+                Layout.minimumWidth: 240
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 2
@@ -658,10 +663,10 @@ ApplicationWindow {
             DpPanel {
                 title: "Thruster main"
                 rightTitle: "ALLOC: VARIABLE"
-                Layout.rowSpan: 2
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 2
+                Layout.preferredWidth: 330
+                Layout.minimumWidth: 260
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 2
@@ -751,12 +756,19 @@ ApplicationWindow {
                 }
             }
 
-            // ===== wind
+            // ===== wind + датчики (правая колонка)
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 300
+                Layout.minimumWidth: 240
+                spacing: 6
+
             DpPanel {
                 title: "Wind"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 2
+                Layout.preferredHeight: 3
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 2
@@ -829,7 +841,7 @@ ApplicationWindow {
                 title: "Датчики"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 2
+                Layout.preferredHeight: 2
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 2
@@ -850,19 +862,22 @@ ApplicationWindow {
                     KV { k: "Bias (LF смещение)"; v: root.hasData() ? Telem.state.bias_kn.toFixed(1) + " kN" : "—" }
                 }
             }
+            }
         }
 
         // ---------------- нижний ряд
         RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 190
+            Layout.preferredHeight: 210
+            Layout.maximumHeight: 240
             spacing: 6
 
             DpPanel {
                 title: "Тренды: ошибка позиции · ветер · суммарная тяга"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 3
+                Layout.preferredWidth: 460
+                Layout.minimumWidth: 320
                 Canvas {
                     id: trendsCanvas
                     anchors.fill: parent
@@ -912,7 +927,8 @@ ApplicationWindow {
                 title: "Аварийный журнал"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 2
+                Layout.preferredWidth: 320
+                Layout.minimumWidth: 240
                 ListView {
                     id: alarmView
                     anchors.fill: parent
@@ -951,7 +967,8 @@ ApplicationWindow {
                 title: "Пульт инструктора"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 2
+                Layout.preferredWidth: 330
+                Layout.minimumWidth: 260
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 4

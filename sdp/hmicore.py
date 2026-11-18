@@ -33,6 +33,8 @@ class HMIState:
         self._alarm_id = 0
         self._limit_state = 0   # детектор фронтов по ошибке позиции
         self._conseq_state = 0
+        self._pos_armed = False  # позиционные аварии активны после первого
+                                 # входа в жёлтый круг (нет ложной аварии на старте)
         self._last_conseq_t = -10.0
         # --- деградационные состояния (по образцу промышленных пультов)
         self._gyro_lost_t = None     # старт счисления курса (модельное t)
@@ -136,15 +138,19 @@ class HMIState:
     def _watch_limits(self):
         """Фронтовые аварии: ошибка позиции и consequence."""
         err = self.con.pos_err
-        state = 2 if err > self.alarm_pos else 1 if err > self.warn_pos else 0
-        if state > self._limit_state:
-            if state == 2:
-                self._raise(f"ПОЗИЦИЯ: выход за аварийный предел "
-                            f"({err:.1f} м > {self.alarm_pos:.0f} м)", 2)
-            elif state == 1:
-                self._raise(f"ПОЗИЦИЯ: выход за предел предупреждения "
-                            f"({err:.1f} м > {self.warn_pos:.0f} м)", 1)
-        self._limit_state = state
+        if not self._pos_armed and err <= self.warn_pos:
+            self._pos_armed = True
+        if self._pos_armed:
+            state = (2 if err > self.alarm_pos
+                     else 1 if err > self.warn_pos else 0)
+            if state > self._limit_state:
+                if state == 2:
+                    self._raise(f"ПОЗИЦИЯ: выход за аварийный предел "
+                                f"({err:.1f} м > {self.alarm_pos:.0f} м)", 2)
+                elif state == 1:
+                    self._raise(f"ПОЗИЦИЯ: выход за предел предупреждения "
+                                f"({err:.1f} м > {self.warn_pos:.0f} м)", 1)
+            self._limit_state = state
         cs = self.con.conseq_level
         if cs != self._conseq_state:
             if cs == 2:
@@ -273,6 +279,7 @@ class HMIState:
                 self.con._init_sim()
                 self._limit_state = 0
                 self._conseq_state = 0
+                self._pos_armed = False
                 self._gyro_lost_t = None
                 self._prs_lost_t = None
                 self._released = False
