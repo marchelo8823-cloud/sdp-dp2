@@ -25,6 +25,9 @@ class SensorSuite:
     def fail_prs(self, idx):
         self.prs_failed[idx] = True
 
+    def fail_gyro(self, idx):
+        self.gyro_failed[idx] = True
+
     def read_position(self, eta_true):
         """Возвращает свотированное измерение [x, y] или None при недоступности."""
         readings = []

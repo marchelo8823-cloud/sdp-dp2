@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
 results_dp2.png
+capability_dp2.png
+consequence.png
+trials.png
 .venv/
