@@ -344,8 +344,9 @@ def run_gui():
         speed["x"] = sl_s.val
         return []
 
-    FuncAnimation(fig, frame, interval=100, blit=False,
-                  cache_frame_data=False)
+    anim = FuncAnimation(fig, frame, interval=100, blit=False,
+                         cache_frame_data=False)
+    fig._sdp_anim = anim     # держим ссылку: иначе GC убьёт анимацию
     plt.show()
     return fig, frame, con
 
