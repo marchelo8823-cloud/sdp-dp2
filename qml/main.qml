@@ -1,0 +1,933 @@
+// SDP-DP2 — QML-HMI пульта оператора (стилистика Kongsberg K-Pos).
+// Данные: контекстное свойство telem (QObject):
+//   Telem.state — QVariantMap телеметрии (сглаженная, 20 Гц)
+//   Telem.tick() — сигнал перерисовки
+//   Telem.cmd({...}) — слот команд (UDP в sim_server)
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import Sdp 1.0
+
+ApplicationWindow {
+    id: root
+    objectName: "sdpHmi"
+    visible: true
+    width: 1440
+    height: 880
+    title: "SDP-DP2 — Пульт оператора ДП"
+
+    // ---------------------------------------------------------- тема
+    property bool dark: true
+    readonly property var pal: dark ? ({
+        "bg": "#0a0f1a", "panel": "#111a2c", "panel2": "#0d1524",
+        "line": "#1e2c47", "txt": "#c9d6ea", "dim": "#5f7396",
+        "disk1": "#101a30", "disk2": "#0a1120"
+    }) : ({
+        "bg": "#dfe5ee", "panel": "#f4f7fb", "panel2": "#e9eef6",
+        "line": "#c3cede", "txt": "#1b2a41", "dim": "#5b6b84",
+        "disk1": "#eef2f9", "disk2": "#dde5f0"
+    })
+    readonly property color green: "#2fd07c"
+    readonly property color yellow: "#ffc542"
+    readonly property color red: "#ff5252"
+    readonly property color cyan: "#39c2d7"
+    readonly property color blue: "#4d8dff"
+    readonly property color orange: "#ff9f43"
+
+    color: pal.bg
+
+    // ---------------------------------------------------------- состояние UI
+    property real range: 100
+    property var trail: []
+    property var trend: []
+    property real lastTrailT: -1
+
+    readonly property var shipN: [38, 12, -30, -38, -38, -30, 12]
+    readonly property var shipE: [0, 9, 9, 4, -4, -9, -9]
+    readonly property var thrPos: [[30, 0], [18, 0], [-30, 6], [-30, -6]]
+
+    function hasData() {
+        var s = Telem.state;
+        return s !== undefined && s.t !== undefined;
+    }
+
+    readonly property int statusLevel: {
+        var s = Telem.state;
+        if (s === undefined || s.t === undefined) return 3;
+        if (s.alarm_worst >= 2 || s.conseq.level >= 2) return 2;
+        if (s.alarm_worst === 1 || s.conseq.level === 1 ||
+                s.pos_err > s.warn_pos) return 1;
+        return 0;
+    }
+
+    Connections {
+        target: Telem
+        function onTick() {
+            var s = Telem.state;
+            if (s === undefined || s.t === undefined) return;
+            if (s.t - root.lastTrailT > 1.0) {
+                if (root.lastTrailT >= 0 && s.t < root.lastTrailT)
+                    root.trail = [];
+                root.trail.push([s.err_n, s.err_e]);
+                if (root.trail.length > 600) root.trail.shift();
+                root.lastTrailT = s.t;
+            }
+            var nr = Math.min(500, Math.max(30, 1.5 * s.pos_err,
+                                            1.7 * s.alarm_pos));
+            if (Math.abs(nr - root.range) / root.range > 0.15)
+                root.range = nr;
+            root.trend.push([s.pos_err, s.wind_meas.speed_kn,
+                             Math.abs(s.resultant.force_kn) * 10]);
+            if (root.trend.length > 2400) root.trend.shift();
+            posPlot.requestPaint();
+            compass.requestPaint();
+            windRose.requestPaint();
+            mimic.requestPaint();
+            trendsCanvas.requestPaint();
+        }
+    }
+
+    // ---------------------------------------------------------- компоненты
+    component DpPanel: Rectangle {
+        id: panelRoot
+        property string title: ""
+        property alias rightTitle: rightLabel.text
+        default property alias body: bodyItem.data
+        color: root.pal.panel
+        radius: 6
+        border.color: root.pal.line
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 8
+            spacing: 4
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    text: panelRoot.title.toUpperCase()
+                    color: root.pal.dim
+                    font.pixelSize: 11
+                    font.letterSpacing: 1
+                }
+                Item { Layout.fillWidth: true }
+                Text {
+                    id: rightLabel
+                    color: root.green
+                    font.pixelSize: 10
+                    font.family: "Menlo"
+                }
+            }
+            Item {
+                id: bodyItem
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+            }
+        }
+    }
+
+    component KV: RowLayout {
+        property string k: ""
+        property string v: "—"
+        property color vColor: root.pal.txt
+        spacing: 6
+        Text { text: k; color: root.pal.dim; font.pixelSize: 12 }
+        Item { Layout.fillWidth: true }
+        Text {
+            text: v
+            color: vColor
+            font.family: "Menlo"
+            font.pixelSize: 12
+            font.bold: true
+        }
+    }
+
+    component LedRow: RowLayout {
+        property string name: ""
+        property bool failed: false
+        spacing: 6
+        Rectangle {
+            width: 10; height: 10; radius: 5
+            color: failed ? root.red : root.green
+            Behavior on color { ColorAnimation { duration: 200 } }
+        }
+        Text { text: name; color: root.pal.txt; font.pixelSize: 12 }
+        Item { Layout.fillWidth: true }
+        Text {
+            text: failed ? "ОТКАЗ" : "OK"
+            color: failed ? root.red : root.pal.txt
+            font.family: "Menlo"
+            font.pixelSize: 12
+            font.bold: true
+        }
+    }
+
+    component DpButton: Button {
+        id: control
+        property bool danger: false
+        property bool accent: false
+        padding: 6
+        contentItem: Text {
+            text: control.text
+            color: control.danger ? root.red : root.pal.txt
+            font.pixelSize: 12
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            color: control.down ? root.pal.line : root.pal.panel2
+            radius: 4
+            border.color: control.danger ? root.red
+                        : control.accent ? root.orange : root.pal.line
+        }
+    }
+
+    // ---------------------------------------------------------- каркас
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: 8
+        spacing: 6
+
+        // ---------------- header
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 42
+            color: root.pal.panel
+            radius: 6
+            border.color: root.pal.line
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                spacing: 14
+                Text {
+                    text: "SDP-DP2"
+                    color: root.cyan
+                    font.pixelSize: 16
+                    font.bold: true
+                    font.letterSpacing: 0.5
+                }
+                Rectangle {
+                    color: root.blue
+                    radius: 3
+                    implicitWidth: modeTxt.implicitWidth + 20
+                    implicitHeight: 22
+                    Text {
+                        id: modeTxt
+                        anchors.centerIn: parent
+                        text: "AUTO POSITION"
+                        color: "white"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                }
+                Text {
+                    font.family: "Menlo"
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: root.pal.txt
+                    text: {
+                        var s = Telem.state;
+                        if (s === undefined || s.t === undefined) return "—";
+                        var mm = Math.floor(s.t / 60), ss = Math.floor(s.t % 60);
+                        return "T+" + (mm < 10 ? "0" : "") + mm + ":"
+                                + (ss < 10 ? "0" : "") + ss
+                                + (s.paused ? " ⏸" : "")
+                                + " · " + s.speed.toFixed(0) + "×";
+                    }
+                }
+                Rectangle {
+                    id: lamp
+                    radius: 3
+                    implicitWidth: lampTxt.implicitWidth + 20
+                    implicitHeight: 22
+                    color: "transparent"
+                    border.color: root.statusLevel === 2 ? root.red
+                                : root.statusLevel === 1 ? root.yellow
+                                : root.statusLevel === 3 ? root.red : root.green
+                    Text {
+                        id: lampTxt
+                        anchors.centerIn: parent
+                        font.pixelSize: 12
+                        font.bold: true
+                        color: parent.border.color
+                        text: root.statusLevel === 2 ? "DP STATUS: ALARM"
+                            : root.statusLevel === 1 ? "DP STATUS: WARNING"
+                            : root.statusLevel === 3 ? "НЕТ СВЯЗИ"
+                            : "DP STATUS: NORMAL"
+                    }
+                    SequentialAnimation on opacity {
+                        running: root.statusLevel >= 2
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.45; duration: 500 }
+                        NumberAnimation { to: 1.0; duration: 500 }
+                        onStopped: lamp.opacity = 1.0
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Text {
+                    Layout.maximumWidth: 460
+                    elide: Text.ElideRight
+                    font.pixelSize: 12
+                    font.bold: true
+                    color: root.statusLevel === 2 ? root.red
+                         : (root.hasData() && Telem.state.conseq.level === 1)
+                           ? root.yellow : root.green
+                    text: root.hasData() ? Telem.state.conseq.text : "…"
+                }
+                Item { Layout.fillWidth: true }
+                DpButton {
+                    text: root.hasData() ? String(Telem.state.unacked) : "0"
+                    background: Rectangle {
+                        radius: 9
+                        color: root.hasData() && Telem.state.unacked > 0
+                               ? root.red : root.pal.line
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: root.hasData() && Telem.state.unacked > 0
+                               ? "white" : root.pal.dim
+                        font.bold: true
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+                    onClicked: Telem.cmd({ "action": "ack" })
+                }
+                DpButton {
+                    text: "ACK"
+                    onClicked: Telem.cmd({ "action": "ack" })
+                }
+                DpButton {
+                    text: "☀/☾"
+                    onClicked: root.dark = !root.dark
+                }
+            }
+        }
+
+        // ---------------- основная сетка
+        GridLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            columns: 4
+            rowSpacing: 6
+            columnSpacing: 6
+
+            // ===== position plot
+            DpPanel {
+                title: "Position plot"
+                rightTitle: "range " + Math.round(root.range) + " м"
+                Layout.rowSpan: 2
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 3
+                Canvas {
+                    id: posPlot
+                    anchors.fill: parent
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        var w = width, h = height;
+                        var R = Math.min(w, h) / 2 - 14;
+                        var cx = w / 2, cy = h / 2;
+                        var s = Telem.state;
+                        // диск
+                        var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+                        g.addColorStop(0, root.pal.disk1);
+                        g.addColorStop(1, root.pal.disk2);
+                        ctx.fillStyle = g;
+                        ctx.strokeStyle = root.pal.line;
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+                        ctx.fill();
+                        ctx.stroke();
+                        // кольца
+                        ctx.setLineDash([4, 4]);
+                        ctx.strokeStyle = root.pal.line;
+                        for (var f = 1; f <= 3; f++) {
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, R * f / 3, 0, 2 * Math.PI);
+                            ctx.stroke();
+                        }
+                        ctx.setLineDash([]);
+                        // риски и подписи
+                        ctx.fillStyle = root.pal.dim;
+                        ctx.strokeStyle = root.pal.dim;
+                        ctx.font = Math.max(8, R / 30) + "px Menlo";
+                        ctx.textAlign = "center";
+                        for (var a = 0; a < 360; a += 10) {
+                            var big = a % 30 === 0;
+                            var r1 = R * (big ? 0.95 : 0.975);
+                            var sa = Math.sin(a * Math.PI / 180);
+                            var ca = Math.cos(a * Math.PI / 180);
+                            ctx.beginPath();
+                            ctx.moveTo(cx + r1 * sa, cy - r1 * ca);
+                            ctx.lineTo(cx + R * sa, cy - R * ca);
+                            ctx.stroke();
+                            if (big)
+                                ctx.fillText(String(a), cx + 0.86 * R * sa,
+                                             cy - 0.86 * R * ca + 4);
+                        }
+                        ctx.textAlign = "left";
+                        for (f = 1; f <= 3; f++)
+                            ctx.fillText(String(Math.round(root.range * f / 3)),
+                                         cx + 3, cy - R * f / 3 - 3);
+                        ctx.fillStyle = root.red;
+                        ctx.font = "bold " + Math.max(10, R / 24) + "px Menlo";
+                        ctx.fillText("N", cx - 5, cy - R - 4);
+                        if (!root.hasData()) return;
+                        // watch circles
+                        var rings = [[s.warn_pos, root.yellow],
+                                     [s.alarm_pos, root.red]];
+                        for (var ri = 0; ri < 2; ri++) {
+                            ctx.setLineDash([5, 4]);
+                            ctx.strokeStyle = rings[ri][1];
+                            ctx.lineWidth = 1.5;
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, rings[ri][0] / root.range * R,
+                                    0, 2 * Math.PI);
+                            ctx.stroke();
+                        }
+                        ctx.setLineDash([]);
+                        // уставка: перекрестие
+                        ctx.strokeStyle = root.red;
+                        ctx.lineWidth = 1.6;
+                        ctx.beginPath();
+                        ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy);
+                        ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8);
+                        ctx.stroke();
+                        // трасса с затуханием
+                        var tr = root.trail;
+                        if (tr.length > 1) {
+                            var step = 10;
+                            for (var i0 = 0; i0 < tr.length - 1; i0 += step) {
+                                var i1 = Math.min(i0 + step, tr.length - 1);
+                                var al = 0.15 + 0.75 * (i0 / tr.length);
+                                ctx.strokeStyle = Qt.rgba(0.30, 0.55, 1.0, al);
+                                ctx.lineWidth = 1.4;
+                                ctx.beginPath();
+                                var p0 = tr[i0];
+                                ctx.moveTo(cx + p0[1] / root.range * R,
+                                           cy - p0[0] / root.range * R);
+                                for (var i = i0 + 1; i <= i1; i++) {
+                                    var pt = tr[i];
+                                    ctx.lineTo(cx + pt[1] / root.range * R,
+                                               cy - pt[0] / root.range * R);
+                                }
+                                ctx.stroke();
+                            }
+                        }
+                        // судно
+                        ctx.save();
+                        ctx.translate(cx + s.err_e / root.range * R,
+                                      cy - s.err_n / root.range * R);
+                        ctx.rotate(s.hdg_deg * Math.PI / 180);
+                        var sc = R / root.range;
+                        ctx.beginPath();
+                        for (var j = 0; j < root.shipN.length; j++) {
+                            var px = root.shipE[j] * sc;
+                            var py = -root.shipN[j] * sc;
+                            if (j === 0) ctx.moveTo(px, py);
+                            else ctx.lineTo(px, py);
+                        }
+                        ctx.closePath();
+                        ctx.shadowColor = root.blue;
+                        ctx.shadowBlur = 14;
+                        ctx.fillStyle = root.blue;
+                        ctx.fill();
+                        ctx.shadowBlur = 0;
+                        ctx.strokeStyle = root.pal.bg;
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: (mouse) => {
+                            if (!root.hasData()) return;
+                            var s = Telem.state;
+                            var R = Math.min(width, height) / 2 - 14;
+                            var e = (mouse.x - width / 2) / R * root.range;
+                            var n = -(mouse.y - height / 2) / R * root.range;
+                            Telem.cmd({ "action": "setpoint",
+                                        "north": s.eta_d[0] + n,
+                                        "east": s.eta_d[1] + e });
+                        }
+                    }
+                }
+            }
+
+            // ===== heading
+            DpPanel {
+                title: "Heading"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 2
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 2
+                    Canvas {
+                        id: compass
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: 170
+                        onPaint: {
+                            var ctx = getContext("2d");
+                            ctx.reset();
+                            var w = width, h = height;
+                            var R = Math.min(w, h) / 2 - 10;
+                            var cx = w / 2, cy = h / 2;
+                            var g = ctx.createRadialGradient(cx, cy, 0,
+                                                             cx, cy, R);
+                            g.addColorStop(0, root.pal.disk1);
+                            g.addColorStop(1, root.pal.disk2);
+                            ctx.fillStyle = g;
+                            ctx.strokeStyle = root.pal.line;
+                            ctx.lineWidth = 1.5;
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+                            ctx.fill();
+                            ctx.stroke();
+                            for (var a = 0; a < 360; a += 5) {
+                                var big = a % 30 === 0;
+                                var r1 = R * (big ? 0.86 : 0.93);
+                                var sa = Math.sin(a * Math.PI / 180);
+                                var ca = Math.cos(a * Math.PI / 180);
+                                ctx.strokeStyle = big ? root.pal.txt : root.pal.dim;
+                                ctx.lineWidth = big ? 2 : 1;
+                                ctx.beginPath();
+                                ctx.moveTo(cx + r1 * sa, cy - r1 * ca);
+                                ctx.lineTo(cx + 0.99 * R * sa,
+                                           cy - 0.99 * R * ca);
+                                ctx.stroke();
+                                if (a % 90 === 0) {
+                                    ctx.fillStyle = a === 0 ? root.red
+                                                            : root.pal.txt;
+                                    ctx.font = "bold " + Math.max(11, R / 8)
+                                               + "px Menlo";
+                                    ctx.textAlign = "center";
+                                    ctx.fillText("NESW"[a / 90],
+                                                 cx + 0.68 * R * sa,
+                                                 cy - 0.68 * R * ca + 5);
+                                }
+                            }
+                            if (!root.hasData()) return;
+                            var s = Telem.state;
+                            // жучок уставки
+                            ctx.save();
+                            ctx.translate(cx, cy);
+                            ctx.rotate(s.hdg_d_deg * Math.PI / 180);
+                            ctx.beginPath();
+                            ctx.moveTo(0, -R - 2);
+                            ctx.lineTo(7, -R + 13);
+                            ctx.lineTo(-7, -R + 13);
+                            ctx.closePath();
+                            ctx.shadowColor = root.green;
+                            ctx.shadowBlur = 10;
+                            ctx.fillStyle = root.green;
+                            ctx.fill();
+                            ctx.restore();
+                            // судно
+                            ctx.save();
+                            ctx.translate(cx, cy);
+                            ctx.rotate(s.hdg_deg * Math.PI / 180);
+                            var r6 = R * 0.62;
+                            ctx.beginPath();
+                            ctx.moveTo(0, -r6);
+                            ctx.lineTo(r6 * 0.26, r6 * 0.68);
+                            ctx.lineTo(0, r6 * 0.4);
+                            ctx.lineTo(-r6 * 0.26, r6 * 0.68);
+                            ctx.closePath();
+                            ctx.shadowColor = root.blue;
+                            ctx.shadowBlur = 12;
+                            ctx.fillStyle = root.blue;
+                            ctx.fill();
+                            ctx.restore();
+                            ctx.shadowBlur = 0;
+                            ctx.fillStyle = root.pal.txt;
+                            ctx.font = "bold " + Math.max(16, R / 5.5)
+                                       + "px Menlo";
+                            ctx.textAlign = "center";
+                            ctx.fillText(s.hdg_deg.toFixed(1) + "°",
+                                         cx, cy + 8);
+                        }
+                    }
+                    KV { k: "ROT"; v: root.hasData() ? Telem.state.rot_dpm.toFixed(1) + " °/min" : "—" }
+                    KV { k: "Отклонение курса"; v: root.hasData() ? Telem.state.hdg_err_deg.toFixed(1) + "°" : "—" }
+                    KV { k: "SOG"; v: root.hasData() ? Telem.state.sog_kn.toFixed(2) + " kn" : "—" }
+                }
+            }
+
+            // ===== thrusters
+            DpPanel {
+                title: "Thruster main"
+                rightTitle: "ALLOC: VARIABLE"
+                Layout.rowSpan: 2
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 2
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 2
+                    Canvas {
+                        id: mimic
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: 200
+                        onPaint: {
+                            var ctx = getContext("2d");
+                            ctx.reset();
+                            var w = width, h = height;
+                            var sx = (w - 70) / 20.0, sy = (h - 70) / 88.0;
+                            var cx = w / 2 - 30, cy = h / 2;
+                            function scr(lx, ly) {
+                                return [cx + ly * sx, cy - lx * sy];
+                            }
+                            // корпус с градиентом
+                            var pts = [[44, 0], [20, 9], [-34, 9], [-44, 4],
+                                       [-44, -4], [-34, -9], [20, -9]];
+                            var g = ctx.createLinearGradient(cx, cy - 44 * sy,
+                                                             cx, cy + 44 * sy);
+                            g.addColorStop(0, root.pal.disk1);
+                            g.addColorStop(1, root.pal.disk2);
+                            ctx.beginPath();
+                            for (var j = 0; j < pts.length; j++) {
+                                var pp = scr(pts[j][0], pts[j][1]);
+                                if (j === 0) ctx.moveTo(pp[0], pp[1]);
+                                else ctx.lineTo(pp[0], pp[1]);
+                            }
+                            ctx.closePath();
+                            ctx.fillStyle = g;
+                            ctx.fill();
+                            ctx.strokeStyle = root.pal.dim;
+                            ctx.lineWidth = 1.5;
+                            ctx.stroke();
+                            if (!root.hasData()) return;
+                            var s = Telem.state;
+                            ctx.font = "10px Menlo";
+                            ctx.textAlign = "center";
+                            for (var i = 0; i < 4; i++) {
+                                var t = s.thrusters[i];
+                                var pos = scr(root.thrPos[i][0],
+                                              root.thrPos[i][1]);
+                                var au = Math.abs(t.u_pct);
+                                var col = t.failed ? root.red
+                                        : au < 60 ? root.green
+                                        : au < 90 ? root.yellow : root.orange;
+                                ctx.beginPath();
+                                ctx.arc(pos[0], pos[1], 13, 0, 2 * Math.PI);
+                                ctx.fillStyle = root.pal.panel2;
+                                ctx.fill();
+                                ctx.strokeStyle = col;
+                                ctx.lineWidth = 1.5;
+                                ctx.stroke();
+                                // стрелка азимута
+                                ctx.save();
+                                ctx.translate(pos[0], pos[1]);
+                                ctx.rotate(t.alpha_deg * Math.PI / 180);
+                                ctx.strokeStyle = col;
+                                ctx.lineWidth = 2.5;
+                                ctx.beginPath();
+                                ctx.moveTo(0, 0);
+                                ctx.lineTo(0, -12);
+                                ctx.stroke();
+                                ctx.restore();
+                                // столбик тяги
+                                var bh = Math.min(au / 100, 1) * 34;
+                                ctx.fillStyle = col;
+                                if (t.u_pct >= 0)
+                                    ctx.fillRect(pos[0] + 17,
+                                                 pos[1] + 15 - bh, 7, bh);
+                                else
+                                    ctx.fillRect(pos[0] + 17, pos[1] + 15,
+                                                 7, bh);
+                                ctx.fillStyle = root.pal.txt;
+                                ctx.fillText(t.failed ? "ОТКАЗ"
+                                    : t.alpha_deg.toFixed(0) + "° "
+                                      + au.toFixed(0) + "%",
+                                    pos[0], pos[1] + 30);
+                            }
+                        }
+                    }
+                    KV { k: "Resultant force"; v: root.hasData() ? Telem.state.resultant.force_kn.toFixed(0) + " kN" : "—" }
+                    KV { k: "Resultant direction"; v: root.hasData() ? Telem.state.resultant.dir_deg.toFixed(1) + "°" : "—" }
+                    KV { k: "Resultant moment"; v: root.hasData() ? Telem.state.resultant.moment_knm.toFixed(0) + " kNm" : "—" }
+                }
+            }
+
+            // ===== wind
+            DpPanel {
+                title: "Wind"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 2
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 2
+                    Canvas {
+                        id: windRose
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: 130
+                        onPaint: {
+                            var ctx = getContext("2d");
+                            ctx.reset();
+                            var w = width, h = height;
+                            var R = Math.min(w, h) / 2 - 8;
+                            var cx = w / 2, cy = h / 2;
+                            var g = ctx.createRadialGradient(cx, cy, 0,
+                                                             cx, cy, R);
+                            g.addColorStop(0, root.pal.disk1);
+                            g.addColorStop(1, root.pal.disk2);
+                            ctx.fillStyle = g;
+                            ctx.strokeStyle = root.pal.line;
+                            ctx.beginPath();
+                            ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+                            ctx.fill();
+                            ctx.stroke();
+                            ctx.font = Math.max(8, R / 11) + "px Menlo";
+                            ctx.textAlign = "center";
+                            for (var a = 0; a < 360; a += 30) {
+                                var sa = Math.sin(a * Math.PI / 180);
+                                var ca = Math.cos(a * Math.PI / 180);
+                                ctx.strokeStyle = root.pal.dim;
+                                ctx.beginPath();
+                                ctx.moveTo(cx + 0.9 * R * sa, cy - 0.9 * R * ca);
+                                ctx.lineTo(cx + R * sa, cy - R * ca);
+                                ctx.stroke();
+                                ctx.fillStyle = a === 0 ? root.red : root.pal.dim;
+                                ctx.fillText(String(a), cx + 0.72 * R * sa,
+                                             cy - 0.72 * R * ca + 4);
+                            }
+                            if (!root.hasData()) return;
+                            var s = Telem.state;
+                            ctx.save();
+                            ctx.translate(cx, cy);
+                            ctx.rotate(s.wind_dir * Math.PI / 180);
+                            ctx.shadowColor = root.cyan;
+                            ctx.shadowBlur = 10;
+                            ctx.strokeStyle = root.cyan;
+                            ctx.lineWidth = 2;
+                            ctx.beginPath();
+                            ctx.moveTo(0, 0.75 * R);
+                            ctx.lineTo(0, 0.12 * R);
+                            ctx.stroke();
+                            ctx.beginPath();
+                            ctx.moveTo(0, 0);
+                            ctx.lineTo(0.09 * R, 0.18 * R);
+                            ctx.lineTo(-0.09 * R, 0.18 * R);
+                            ctx.closePath();
+                            ctx.fillStyle = root.cyan;
+                            ctx.fill();
+                            ctx.restore();
+                        }
+                    }
+                    KV { k: "Измеренный"; v: root.hasData() ? Telem.state.wind_meas.speed_kn.toFixed(1) + " kn  " + Telem.state.wind_meas.dir_deg.toFixed(0) + "°" : "—" }
+                    KV { k: "Истинный"; v: root.hasData() ? Telem.state.wind_true.speed_kn.toFixed(1) + " kn  " + Telem.state.wind_true.dir_deg.toFixed(0) + "°" : "—" }
+                    KV { k: "Волна Hs / Tp"; v: root.hasData() ? Telem.state.hs.toFixed(1) + " м / " + Telem.state.tp.toFixed(0) + " с" : "—" }
+                }
+            }
+
+            // ===== sensors
+            DpPanel {
+                title: "Датчики"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 2
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 2
+                    LedRow { name: "PRS 1"; failed: root.hasData() && Telem.state.sensors.prs[0] }
+                    LedRow { name: "PRS 2"; failed: root.hasData() && Telem.state.sensors.prs[1] }
+                    LedRow { name: "PRS 3"; failed: root.hasData() && Telem.state.sensors.prs[2] }
+                    LedRow { name: "ГИРО 1"; failed: root.hasData() && Telem.state.sensors.gyro[0] }
+                    LedRow { name: "ГИРО 2"; failed: root.hasData() && Telem.state.sensors.gyro[1] }
+                    KV {
+                        k: "Отклонение позиции"
+                        v: root.hasData() ? Telem.state.pos_err.toFixed(2) + " м" : "—"
+                        vColor: !root.hasData() ? root.pal.txt
+                              : Telem.state.pos_err > Telem.state.alarm_pos ? root.red
+                              : Telem.state.pos_err > Telem.state.warn_pos ? root.yellow
+                              : root.green
+                    }
+                    KV { k: "N / E"; v: root.hasData() ? Telem.state.err_n.toFixed(2) + " / " + Telem.state.err_e.toFixed(2) + " м" : "—" }
+                    KV { k: "Bias (LF смещение)"; v: root.hasData() ? Telem.state.bias_kn.toFixed(1) + " kN" : "—" }
+                }
+            }
+        }
+
+        // ---------------- нижний ряд
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 190
+            spacing: 6
+
+            DpPanel {
+                title: "Тренды: ошибка позиции · ветер · суммарная тяга"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 3
+                Canvas {
+                    id: trendsCanvas
+                    anchors.fill: parent
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        var w = width, h = height;
+                        ctx.fillStyle = root.pal.panel2;
+                        ctx.fillRect(0, 0, w, h);
+                        ctx.strokeStyle = root.pal.line;
+                        for (var i = 1; i < 4; i++) {
+                            ctx.beginPath();
+                            ctx.moveTo(0, h * i / 4);
+                            ctx.lineTo(w, h * i / 4);
+                            ctx.stroke();
+                        }
+                        var d = root.trend, n = d.length;
+                        if (n < 2) return;
+                        var series = [[0, 8.0, root.orange],
+                                      [1, 45.0, root.cyan],
+                                      [2, 400.0, root.green]];
+                        for (var si = 0; si < 3; si++) {
+                            var idx = series[si][0], mx = series[si][1];
+                            var col = series[si][2];
+                            ctx.beginPath();
+                            for (var j = 0; j < n; j++) {
+                                var x = j / (n - 1) * w;
+                                var y = h - Math.min(d[j][idx] / mx, 1)
+                                        * h * 0.94 - 3;
+                                if (j === 0) ctx.moveTo(x, y);
+                                else ctx.lineTo(x, y);
+                            }
+                            ctx.strokeStyle = col;
+                            ctx.lineWidth = 1.6;
+                            ctx.stroke();
+                            ctx.lineTo(w, h);
+                            ctx.lineTo(0, h);
+                            ctx.closePath();
+                            ctx.fillStyle = Qt.rgba(col.r, col.g, col.b, 0.12);
+                            ctx.fill();
+                        }
+                    }
+                }
+            }
+
+            DpPanel {
+                title: "Аварийный журнал"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 2
+                ListView {
+                    id: alarmView
+                    anchors.fill: parent
+                    clip: true
+                    spacing: 2
+                    model: root.hasData() ? Telem.state.alarms : []
+                    delegate: Rectangle {
+                        width: alarmView.width
+                        height: 22
+                        radius: 3
+                        color: root.pal.panel2
+                        opacity: modelData.acked ? 0.45 : 1.0
+                        Rectangle {
+                            width: 3
+                            height: parent.height
+                            color: modelData.level === 2 ? root.red
+                                 : modelData.level === 1 ? root.yellow
+                                 : root.pal.line
+                        }
+                        Text {
+                            x: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: modelData.t.toFixed(0) + " с   " + modelData.text
+                            font.pixelSize: 11
+                            font.family: "Menlo"
+                            color: modelData.acked ? root.pal.dim
+                                 : modelData.level === 2 ? root.red
+                                 : modelData.level === 1 ? root.yellow
+                                 : root.pal.txt
+                        }
+                    }
+                }
+            }
+
+            DpPanel {
+                title: "Пульт инструктора"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 2
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 4
+                    RowLayout {
+                        spacing: 4
+                        DpButton { text: "ДРУ1"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 0 }) }
+                        DpButton { text: "ДРУ2"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 1 }) }
+                        DpButton { text: "ДРУ3"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 2 }) }
+                        DpButton { text: "ДРУ4"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "thruster", "idx": 3 }) }
+                        DpButton { text: "PRS3"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "prs", "idx": 2 }) }
+                        DpButton { text: "ГИРО1"; accent: true; onClicked: Telem.cmd({ "action": "fail", "kind": "gyro", "idx": 0 }) }
+                    }
+                    Text { text: "Ветер: " + windV.value.toFixed(1) + " м/с"; color: root.pal.dim; font.pixelSize: 11 }
+                    Slider {
+                        id: windV
+                        Layout.fillWidth: true
+                        from: 0; to: 20; stepSize: 0.5; value: 10
+                        onMoved: Telem.cmd({ "action": "wind",
+                                             "speed_ms": value,
+                                             "dir_deg": windD.value })
+                    }
+                    Text { text: "Направление ветра: " + windD.value.toFixed(0) + "°"; color: root.pal.dim; font.pixelSize: 11 }
+                    Slider {
+                        id: windD
+                        Layout.fillWidth: true
+                        from: 0; to: 360; stepSize: 5; value: 30
+                        onMoved: Telem.cmd({ "action": "wind",
+                                             "speed_ms": windV.value,
+                                             "dir_deg": value })
+                    }
+                    Text { text: "Hs: " + hsS.value.toFixed(1) + " м"; color: root.pal.dim; font.pixelSize: 11 }
+                    Slider {
+                        id: hsS
+                        Layout.fillWidth: true
+                        from: 0; to: 6; stepSize: 0.5; value: 2
+                        onMoved: Telem.cmd({ "action": "hs", "hs": value })
+                    }
+                    Text { text: "Ускорение: " + spdS.value.toFixed(0) + "×"; color: root.pal.dim; font.pixelSize: 11 }
+                    Slider {
+                        id: spdS
+                        Layout.fillWidth: true
+                        from: 1; to: 20; stepSize: 1; value: 5
+                        onMoved: Telem.cmd({ "action": "speed", "value": value })
+                    }
+                    RowLayout {
+                        spacing: 4
+                        DpButton { text: "Пауза"; onClicked: Telem.cmd({ "action": "pause" }) }
+                        DpButton { text: "Курс −10°"; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": -10 }) }
+                        DpButton { text: "Курс +10°"; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": 10 }) }
+                        DpButton { text: "Сброс"; danger: true; onClicked: Telem.cmd({ "action": "reset" }) }
+                    }
+                    RowLayout {
+                        spacing: 4
+                        Text { text: "Watch circle, м:"; color: root.pal.dim; font.pixelSize: 11 }
+                        SpinBox {
+                            id: wcW
+                            from: 1; to: 50; value: 3
+                            palette.text: root.pal.txt
+                            palette.base: root.pal.panel2
+                        }
+                        SpinBox {
+                            id: wcA
+                            from: 2; to: 80; value: 5
+                            palette.text: root.pal.txt
+                            palette.base: root.pal.panel2
+                        }
+                        DpButton {
+                            text: "Задать"
+                            onClicked: Telem.cmd({ "action": "limits",
+                                                   "warn": wcW.value,
+                                                   "alarm": wcA.value })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

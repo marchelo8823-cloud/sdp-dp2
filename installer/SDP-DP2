@@ -94,7 +94,8 @@ while true; do
     echo "  6) compare_dob.py         Оценка возмущений: bias FF + RBF-DOB (долго)"
     echo "  7) console.py             DP-пульт: интерактивная консоль оператора (GUI)"
     echo "  8) webhmi.py              Web-HMI: пульт в браузере, стилистика K-Pos"
-    echo "  9) hmi.py                 Нативный HMI (Qt): UDP-клиент к sim_server, K-Pos"
+    echo "  9) hmi.py                 Нативный HMI (Qt Widgets): UDP-клиент, K-Pos"
+    echo "  0) hmi_qml.py             QML-HMI: современный пульт (GPU, анимации), K-Pos"
     echo "  q) Выход"
     echo
     read -r -n 1 -p "Выбор: " ch
@@ -109,6 +110,7 @@ while true; do
         7) run_script console.py ;;
         8) run_script webhmi.py ;;
         9) run_script hmi.py ;;
+        0) run_script hmi_qml.py ;;
         q|Q) echo "До встречи на рейде."; exit 0 ;;
         *) ;;
     esac
