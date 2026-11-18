@@ -35,8 +35,11 @@ def main():
     controller = PIDController()
 
     thrusters = [
-        # Носовой туннельный: азимут фиксирован (90°), реверсивная тяга
+        # Два носовых туннельных (резервирование носовой группы — DP-2):
+        # азимут фиксирован (90°), реверсивная тяга
         AzimuthThruster(lx=30.0, ly=0.0, t_max=1.5e5, az0_deg=90.0,
+                        tunnel=True),
+        AzimuthThruster(lx=18.0, ly=0.0, t_max=1.5e5, az0_deg=90.0,
                         tunnel=True),
         # Кормовые азимутальные; запрещённые зоны — направление на соседний
         # движитель (струя не должна бить в соседний винт)
@@ -54,8 +57,9 @@ def main():
 
     n = int(T_END / DT)
     log = {k: np.zeros((n, 3)) for k in ("eta", "eta_hat", "tau", "tau_alloc")}
-    log["thrust"] = np.zeros((n, 3))
-    log["azimuth"] = np.zeros((n, 3))
+    NT = len(thrusters)
+    log["thrust"] = np.zeros((n, NT))
+    log["azimuth"] = np.zeros((n, NT))
     t_axis = np.arange(n) * DT
 
     tau_cmd = np.zeros(3)
@@ -65,7 +69,7 @@ def main():
         if abs(t - 150.0) < DT / 2:
             sensors.fail_prs(2)
         if abs(t - 300.0) < DT / 2:
-            thrusters[2].failed = True
+            thrusters[3].failed = True
 
         # --- Среда (силы заданы в NED → в body-кадр) ---
         # Течение учитывается неявно: его постоянную составляющую
@@ -128,7 +132,7 @@ def main():
     ax.grid(True); ax.legend()
 
     ax = axes[1, 1]
-    for i in range(3):
+    for i in range(NT):
         ax.plot(t_axis, log["thrust"][:, i] / 1e3, label=f"ДРУ {i+1}")
     ax.axvline(300, color="r", ls=":", alpha=0.6)
     ax.set_xlabel("t, с"); ax.set_ylabel("тяга, кН")
@@ -136,7 +140,7 @@ def main():
 
     ax = axes[2, 0]
     az_plot = np.degrees(np.unwrap(log["azimuth"], axis=0))
-    for i in range(3):
+    for i in range(NT):
         ax.plot(t_axis, az_plot[:, i], label=f"ДРУ {i+1}")
     # Запрещённые зоны
     for i, th in enumerate(thrusters):
