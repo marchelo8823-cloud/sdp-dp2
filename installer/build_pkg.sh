@@ -28,7 +28,7 @@ chmod +x "$APP/Contents/MacOS/SDP-DP2"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' \
       sdp "$APP/Contents/Resources/src/"
 cp simulate.py capability.py trials.py hil_trials.py \
-   compare_controllers.py compare_dob.py \
+   compare_controllers.py compare_dob.py console.py \
    requirements.txt README.md \
    "$APP/Contents/Resources/src/"
 
