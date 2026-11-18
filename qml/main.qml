@@ -328,7 +328,7 @@ ApplicationWindow {
                         var cx = w / 2, cy = h / 2;
                         var s = Telem.state;
                         // диск
-                        var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+                        var g = ctx.createLinearGradient(cx, cy - R, cx, cy + R);
                         g.addColorStop(0, root.pal.disk1);
                         g.addColorStop(1, root.pal.disk2);
                         ctx.fillStyle = g;
@@ -474,8 +474,7 @@ ApplicationWindow {
                             var w = width, h = height;
                             var R = Math.min(w, h) / 2 - 10;
                             var cx = w / 2, cy = h / 2;
-                            var g = ctx.createRadialGradient(cx, cy, 0,
-                                                             cx, cy, R);
+                            var g = ctx.createLinearGradient(cx, cy - R, cx, cy + R);
                             g.addColorStop(0, root.pal.disk1);
                             g.addColorStop(1, root.pal.disk2);
                             ctx.fillStyle = g;
@@ -672,8 +671,7 @@ ApplicationWindow {
                             var w = width, h = height;
                             var R = Math.min(w, h) / 2 - 8;
                             var cx = w / 2, cy = h / 2;
-                            var g = ctx.createRadialGradient(cx, cy, 0,
-                                                             cx, cy, R);
+                            var g = ctx.createLinearGradient(cx, cy - R, cx, cy + R);
                             g.addColorStop(0, root.pal.disk1);
                             g.addColorStop(1, root.pal.disk2);
                             ctx.fillStyle = g;
