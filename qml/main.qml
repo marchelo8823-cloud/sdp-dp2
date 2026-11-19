@@ -49,6 +49,49 @@ ApplicationWindow {
     readonly property var shipE: [0, 9, 9, 4, -4, -9, -9]
     readonly property var thrPos: [[30, 0], [18, 0], [-30, 6], [-30, -6]]
 
+    // --- подтверждение уставок (Mega-Guard 6.1.3–6.1.4: Apply/Cancel;
+    // РС 8.5.7 — одно непреднамеренное действие не теряет позицию)
+    property bool pendPos: false
+    property real pendN: 0
+    property real pendE: 0
+    property bool pendHdg: false
+    property real pendHdgDeg: 0
+
+    function jogSetpoint(dn, de) {
+        if (!hasData()) return;
+        if (!pendPos) {
+            pendN = Telem.state.eta_d[0];
+            pendE = Telem.state.eta_d[1];
+            pendPos = true;
+        }
+        pendN += dn;
+        pendE += de;
+    }
+    function setPendingPoint(n, e) {
+        pendN = n; pendE = e; pendPos = true;
+    }
+    function bumpPendingHdg(d) {
+        if (!hasData()) return;
+        if (!pendHdg) {
+            pendHdgDeg = Telem.state.hdg_d_deg;
+            pendHdg = true;
+        }
+        pendHdgDeg = (pendHdgDeg + d + 360) % 360;
+    }
+    function applyPending() {
+        if (pendPos)
+            Telem.cmd({ "action": "setpoint",
+                        "north": pendN, "east": pendE });
+        if (pendHdg)
+            Telem.cmd({ "action": "heading", "deg": pendHdgDeg });
+        pendPos = false;
+        pendHdg = false;
+    }
+    function cancelPending() {
+        pendPos = false;
+        pendHdg = false;
+    }
+
     function hasData() {
         var s = Telem.state;
         return s !== undefined && s.t !== undefined;
@@ -211,15 +254,23 @@ ApplicationWindow {
         }
         Item { Layout.fillWidth: true }
         Text { text: info; color: root.pal.dim; font.pixelSize: 10; font.family: "Menlo" }
+        // снятие системы — критичное действие, с подтверждением;
+        // возврат — безопасное, сразу
+        DpConfirmButton {
+            visible: st === "ok"
+            label: "Снять"
+            confirmLabel: "Снять?"
+            padding: 3
+            onConfirmed: Telem.cmd({ "action": "sensor_deselect",
+                                     "kind": kind, "idx": idx,
+                                     "on": true })
+        }
         DpButton {
-            visible: st !== "failed"
-            text: st === "ok" ? "Снять" : "Вернуть"
+            visible: st !== "ok" && st !== "failed"
+            text: "Вернуть"
             padding: 3
             onClicked: {
-                if (st === "ok")
-                    Telem.cmd({ "action": "sensor_deselect", "kind": kind,
-                                "idx": idx, "on": true })
-                else if (st === "deselected")
+                if (st === "deselected")
                     Telem.cmd({ "action": "sensor_deselect", "kind": kind,
                                 "idx": idx, "on": false })
                 else
@@ -253,6 +304,35 @@ ApplicationWindow {
             border.color: control.danger ? root.red
                         : control.active ? root.cyan
                         : control.accent ? root.orange : root.pal.line
+        }
+    }
+
+    // Кнопка с двухэтапным подтверждением (РС 8.5.7): первое нажатие
+    // взводит на 3 с («ПОДТВЕРДИ»), второе — исполняет. Как повторное
+    // нажатие режимов на Mega-Guard / K-Pos.
+    component DpConfirmButton: DpButton {
+        id: cfb
+        property string label: ""
+        property string confirmLabel: "ПОДТВЕРДИ"
+        property bool armed: false
+        signal confirmed()
+        text: armed ? confirmLabel : label
+        accent: armed
+        Timer {
+            id: armTimer
+            interval: 3000
+            repeat: false
+            onTriggered: cfb.armed = false
+        }
+        onClicked: {
+            if (cfb.armed) {
+                cfb.armed = false;
+                armTimer.stop();
+                cfb.confirmed();
+            } else {
+                cfb.armed = true;
+                armTimer.restart();
+            }
         }
     }
 
@@ -540,6 +620,26 @@ ApplicationWindow {
                         ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy);
                         ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8);
                         ctx.stroke();
+                        // предлагаемая точка (до «Применить») — жёлтая
+                        if (root.pendPos) {
+                            var dn = root.pendN - s.eta_d[0];
+                            var de = root.pendE - s.eta_d[1];
+                            var mx = cx + de / root.range * R;
+                            var my = cy - dn / root.range * R;
+                            ctx.setLineDash([4, 3]);
+                            ctx.strokeStyle = root.yellow;
+                            ctx.lineWidth = 1.6;
+                            ctx.beginPath();
+                            ctx.moveTo(mx - 8, my); ctx.lineTo(mx + 8, my);
+                            ctx.moveTo(mx, my - 8); ctx.lineTo(mx, my + 8);
+                            ctx.stroke();
+                            // пунктир от текущей уставки к предлагаемой
+                            ctx.beginPath();
+                            ctx.moveTo(cx, cy);
+                            ctx.lineTo(mx, my);
+                            ctx.stroke();
+                            ctx.setLineDash([]);
+                        }
                         // трасса с затуханием
                         var tr = root.trail;
                         if (tr.length > 1) {
@@ -587,15 +687,16 @@ ApplicationWindow {
                     }
                     MouseArea {
                         anchors.fill: parent
+                        // клик по плану — тоже только в «предлагаемую»
+                        // точку: исполнение после «Применить» (РС 8.5.7)
                         onClicked: (mouse) => {
                             if (!root.hasData()) return;
                             var s = Telem.state;
                             var R = Math.min(width, height) / 2 - 14;
                             var e = (mouse.x - width / 2) / R * root.range;
                             var n = -(mouse.y - height / 2) / R * root.range;
-                            Telem.cmd({ "action": "setpoint",
-                                        "north": s.eta_d[0] + n,
-                                        "east": s.eta_d[1] + e });
+                            root.setPendingPoint(s.eta_d[0] + n,
+                                                 s.eta_d[1] + e);
                         }
                     }
                 }
@@ -708,10 +809,10 @@ ApplicationWindow {
                     }
                     RowLayout {
                         spacing: 4
-                        DpButton { text: "N"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": 1, "de": 0 }) }
-                        DpButton { text: "S"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": -1, "de": 0 }) }
-                        DpButton { text: "W"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": 0, "de": -1 }) }
-                        DpButton { text: "E"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "setpoint_jog", "dn": 0, "de": 1 }) }
+                        DpButton { text: "N"; Layout.fillWidth: true; onClicked: root.jogSetpoint(1, 0) }
+                        DpButton { text: "S"; Layout.fillWidth: true; onClicked: root.jogSetpoint(-1, 0) }
+                        DpButton { text: "W"; Layout.fillWidth: true; onClicked: root.jogSetpoint(0, -1) }
+                        DpButton { text: "E"; Layout.fillWidth: true; onClicked: root.jogSetpoint(0, 1) }
                     }
                     Text {
                         text: "КУРС"
@@ -721,10 +822,57 @@ ApplicationWindow {
                     }
                     RowLayout {
                         spacing: 4
-                        DpButton { text: "−10°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": -10 }) }
-                        DpButton { text: "−1°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": -1 }) }
-                        DpButton { text: "+1°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": 1 }) }
-                        DpButton { text: "+10°"; Layout.fillWidth: true; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": 10 }) }
+                        DpButton { text: "−10°"; Layout.fillWidth: true; onClicked: root.bumpPendingHdg(-10) }
+                        DpButton { text: "−1°"; Layout.fillWidth: true; onClicked: root.bumpPendingHdg(-1) }
+                        DpButton { text: "+1°"; Layout.fillWidth: true; onClicked: root.bumpPendingHdg(1) }
+                        DpButton { text: "+10°"; Layout.fillWidth: true; onClicked: root.bumpPendingHdg(10) }
+                    }
+                    // панель подтверждения новой уставки (MG Apply/Cancel)
+                    Rectangle {
+                        visible: root.pendPos || root.pendHdg
+                        Layout.fillWidth: true
+                        implicitHeight: pendCol.implicitHeight + 10
+                        radius: 4
+                        color: Qt.rgba(root.yellow.r, root.yellow.g,
+                                       root.yellow.b, 0.10)
+                        border.color: root.yellow
+                        ColumnLayout {
+                            id: pendCol
+                            anchors.fill: parent
+                            anchors.margins: 5
+                            spacing: 3
+                            Text {
+                                visible: root.pendPos
+                                text: "Новая точка: N "
+                                      + root.pendN.toFixed(1) + "  E "
+                                      + root.pendE.toFixed(1)
+                                color: root.yellow
+                                font.pixelSize: 11
+                                font.family: "Menlo"
+                            }
+                            Text {
+                                visible: root.pendHdg
+                                text: "Новый курс: "
+                                      + root.pendHdgDeg.toFixed(0) + "°"
+                                color: root.yellow
+                                font.pixelSize: 11
+                                font.family: "Menlo"
+                            }
+                            RowLayout {
+                                spacing: 4
+                                DpButton {
+                                    text: "Применить"
+                                    Layout.fillWidth: true
+                                    active: true
+                                    onClicked: root.applyPending()
+                                }
+                                DpButton {
+                                    text: "Отмена"
+                                    Layout.fillWidth: true
+                                    onClicked: root.cancelPending()
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1240,7 +1388,7 @@ ApplicationWindow {
                         DpButton { text: "Пауза"; onClicked: Telem.cmd({ "action": "pause" }) }
                         DpButton { text: "Курс −10°"; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": -10 }) }
                         DpButton { text: "Курс +10°"; onClicked: Telem.cmd({ "action": "heading_bump", "d_deg": 10 }) }
-                        DpButton { text: "Сброс"; danger: true; onClicked: Telem.cmd({ "action": "reset" }) }
+                        DpConfirmButton { label: "Сброс"; confirmLabel: "СБРОС?"; danger: true; onConfirmed: Telem.cmd({ "action": "reset" }) }
                     }
                     RowLayout {
                         spacing: 4
@@ -1279,20 +1427,20 @@ ApplicationWindow {
                     spacing: 4
                     RowLayout {
                         spacing: 4
-                        DpButton {
-                            text: "АВТО"
+                        DpConfirmButton {
+                            label: "АВТО"
                             active: root.hasData() && Telem.state.mode === "auto"
-                            onClicked: Telem.cmd({ "action": "mode", "mode": "auto" })
+                            onConfirmed: Telem.cmd({ "action": "mode", "mode": "auto" })
                         }
-                        DpButton {
-                            text: "MAN"
+                        DpConfirmButton {
+                            label: "MAN"
                             active: root.hasData() && Telem.state.mode === "man_joy"
-                            onClicked: Telem.cmd({ "action": "mode", "mode": "man_joy" })
+                            onConfirmed: Telem.cmd({ "action": "mode", "mode": "man_joy" })
                         }
-                        DpButton {
-                            text: "AUTO JOY"
+                        DpConfirmButton {
+                            label: "AUTO JOY"
                             active: root.hasData() && Telem.state.mode === "auto_joy"
-                            onClicked: Telem.cmd({ "action": "mode", "mode": "auto_joy" })
+                            onConfirmed: Telem.cmd({ "action": "mode", "mode": "auto_joy" })
                         }
                     }
                     RowLayout {
