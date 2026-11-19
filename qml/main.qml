@@ -1288,9 +1288,12 @@ ApplicationWindow {
                                     joyPad.sendJoy();
                                     joyPad.requestPaint();
                                 }
-                                onPressed: upd(mouse.x, mouse.y)
-                                onPositionChanged: if (pressed)
+                                onPressed: function(mouse) {
                                     upd(mouse.x, mouse.y)
+                                }
+                                onPositionChanged: function(mouse) {
+                                    if (pressed) upd(mouse.x, mouse.y)
+                                }
                             }
                         }
                         // момент (рысканье): вертикальный ползунок

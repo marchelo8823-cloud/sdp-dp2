@@ -245,17 +245,73 @@ class AzimuthAllocator:
         u_new = np.clip(u_des, -th.t_max, th.t_max)
         return u_new, alpha_new
 
+    # --- Тяга на текущих осях (как в промышленных аллокаторах) -------------
+    def _solve_axis_forces(self, tau, active):
+        """min Σ (u_i/t_max_i)² s.t. A u = tau, где сила i-го движителя
+        идёт строго по его ТЕКУЩЕЙ оси (азимут медленный, решаем по
+        тягам). Линейная задача — достигнутый tau совпадает с командой,
+        без ошибки проекции."""
+        m = len(active)
+        A = np.zeros((3, m))
+        W = np.zeros(m)
+        for j, i in enumerate(active):
+            th = self.thrusters[i]
+            ca, sa = np.cos(th.alpha), np.sin(th.alpha)
+            A[0, j] = ca
+            A[1, j] = sa
+            A[2, j] = th.lx * sa - th.ly * ca
+            W[j] = th.t_max ** 2
+        M = A @ (A * W[None, :]).T
+        scale = max(1.0, float(np.abs(M).max()))
+        lam = np.linalg.pinv(M + self.reg * scale * np.eye(3)) @ tau
+        return (A * W[None, :]).T @ lam
+
+    def _axis_forces(self, tau, active):
+        """Тяги на текущих осях + итеративная перераздача насыщения."""
+        u = np.zeros(len(self.thrusters))
+        if not active:
+            return u
+        free = list(active)
+        tau_res = np.asarray(tau, float).copy()
+        for _ in range(3):
+            if not free or np.linalg.norm(tau_res) < 1e-9:
+                break
+            sol = self._solve_axis_forces(tau_res, free)
+            clipped = []
+            for j, i in enumerate(free):
+                th = self.thrusters[i]
+                if abs(sol[j]) > th.t_max:
+                    sol[j] = np.sign(sol[j]) * th.t_max
+                    clipped.append(i)
+                u[i] += sol[j]
+            f_act = np.array([[u[i] * np.cos(self.thrusters[i].alpha),
+                               u[i] * np.sin(self.thrusters[i].alpha)]
+                              for i in range(len(self.thrusters))])
+            tau_res = np.asarray(tau, float) - self._generalized(f_act)
+            free = [i for i in free if i not in clipped]
+        return u
+
     # --- Основной вызов -----------------------------------------------------
     def allocate(self, tau, dt):
-        """Возвращает (u[N], alpha[N], достигнутый tau)."""
+        """Возвращает (u[N], alpha[N], достигнутый tau).
+
+        Двухэтапная схема (как Kongsberg/Wärtsilä):
+        1) тяги решаются на текущих осях — линейный QP, без ошибки
+           проекции: чистый момент даёт дифференциальную пару туннельных,
+           боковая сила не подмешивает момент;
+        2) азимуты медленно следят за «идеальным» 2D-распределением
+           (гистерезис + демпфирующая полоса) — механика не охотится.
+        """
         active = [i for i, th in enumerate(self.thrusters) if not th.failed]
-        f = self._constrained_forces(tau, active)
+        u_cmd = self._axis_forces(tau, active)
+        f2d = self._constrained_forces(tau, active)   # цели по углам
         for i, th in enumerate(self.thrusters):
             if th.failed:
                 th.step_drive(0.0, th.alpha, dt)
                 continue
-            u_cmd, alpha_cmd = self._apply_azimuth_limits(th, f[i], dt)
-            th.step_drive(u_cmd, alpha_cmd, dt)
+            _, alpha_cmd = self._apply_azimuth_limits(th, f2d[i], dt)
+            th.step_drive(np.clip(u_cmd[i], -th.t_max, th.t_max),
+                          alpha_cmd, dt)
         # Сила — по фактическому углу оси (с серво-ошибкой)
         f_act = np.array([[th.u * np.cos(th.alpha_eff),
                            th.u * np.sin(th.alpha_eff)]
