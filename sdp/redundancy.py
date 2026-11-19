@@ -55,6 +55,8 @@ class PrsChannel:
         self._drift_t0 = None
         self._dev_since = None
         self.disagree = False     # расходится с другой системой (2 в работе)
+        self.external = False     # канал реального датчика (NMEA):
+                                  # hist наполняется извне, не симуляцией
 
     @property
     def active(self):
@@ -155,6 +157,7 @@ class GyroChannel:
         self.dev_deg = 0.0        # отклонение от принятого курса, °
         self.hist = deque(maxlen=WIN)
         self._frozen_val = None
+        self.external = False     # внешний гирокомпас (NMEA HDT)
 
     @property
     def active(self):
@@ -275,10 +278,43 @@ class SensorSuite:
         return sum(1 for ch in self.gyro if ch.active)
 
     # --------------------------------------------------- чтение
+    def attach_external_prs(self, name):
+        """Канал внешней PRS (NMEA): данные приходят из feed_ext_*."""
+        ch = PrsChannel(name)
+        ch.external = True
+        ch.failed = True            # до первых действительных данных
+        self.prs.append(ch)
+        return len(self.prs) - 1
+
+    def attach_external_gyro(self, name):
+        ch = GyroChannel(name, 0.0)
+        ch.external = True
+        ch.failed = True
+        self.gyro.append(ch)
+        return len(self.gyro) - 1
+
+    def feed_ext_position(self, xy, t):
+        """Данные от внешней PRS (NED, м); свежесть — по t канала."""
+        for ch in self.prs:
+            if ch.external:
+                ch.failed = False
+                ch.hist.append((t, np.asarray(xy, float)))
+
+    def feed_ext_heading(self, psi_deg, t):
+        for ch in self.gyro:
+            if ch.external:
+                ch.failed = False
+                ch.hist.append((t, float(np.deg2rad(psi_deg))))
+
     def read_position(self, eta_true, t=None):
         """Свотированное измерение [x, y] или None, если систем нет."""
         readings = {}
         for i, ch in enumerate(self.prs):
+            if ch.external:
+                # внешний канал: берём последнее измерение, если свежее
+                if ch.hist and (t or 0.0) - ch.hist[-1][0] <= 2.0:
+                    readings[i] = ch.hist[-1][1]
+                continue
             r = ch.read(eta_true[0:2], t or 0.0, self.rng)
             if r is not None:
                 readings[i] = r
@@ -334,6 +370,10 @@ class SensorSuite:
         """Принятый курс (среднее активных) или None, если гиро нет."""
         readings = {}
         for i, ch in enumerate(self.gyro):
+            if ch.external:
+                if ch.hist and (t or 0.0) - ch.hist[-1][0] <= 2.0:
+                    readings[i] = ch.hist[-1][1]
+                continue
             r = ch.read(psi_true, t or 0.0, self.rng)
             if r is not None:
                 readings[i] = r

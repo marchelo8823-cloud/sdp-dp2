@@ -17,6 +17,8 @@ import numpy as np
 
 from console import DPConsole
 from sdp.capability_live import live_polar
+from sdp.mbus import ModbusTcpServer
+from sdp.nmea import NmeaReceiver
 from sdp.redundancy import GYRO_DISAGREE_DEG, DEV_LIM
 from sdp.voyager import VoyageRecorder
 
@@ -59,6 +61,21 @@ class HMIState:
         # --- voyage recorder («чёрный ящик», IMO MSC/Circ.645)
         self.recorder = VoyageRecorder()
         self._last_rec_t = -10.0
+        # --- промышленные интерфейсы: NMEA-вход, Modbus-выход
+        # внешние каналы участвуют в вотировании наравне с остальными;
+        # начало отсчёта NMEA (первый fix) соответствует точке (0,0)
+        # симуляции — так настроены и судовые GPS-имитаторы
+        self.con.sensors.attach_external_prs("PRS 4 EXT")
+        self.con.sensors.attach_external_gyro("ГИРО 3 EXT")
+        self.nmea = NmeaReceiver(port=7201)
+        self.mbus = ModbusTcpServer(self.snapshot, port=5020)
+        # конфликт портов (второй экземпляр HMIState, smoke-тест)
+        # не должен ронять пульт — интерфейсы просто не поднимутся
+        for starter in (self.nmea.start, self.mbus.start):
+            try:
+                starter()
+            except OSError:
+                pass
 
     # --------------------------------------------------------- capability
     def _cap_loop(self):
@@ -237,6 +254,13 @@ class HMIState:
                 if self.con.t - self._last_rec_t >= 1.0:
                     self.recorder.log_row(self._rec_row(self.con))
                     self._last_rec_t = self.con.t
+                # NMEA: внешние датчики в свои каналы
+                p = self.nmea.get_position()
+                if p is not None:
+                    self.con.sensors.feed_ext_position(p, self.con.t)
+                hd = self.nmea.get_heading()
+                if hd is not None:
+                    self.con.sensors.feed_ext_heading(hd, self.con.t)
 
     @staticmethod
     def _rec_row(c):
@@ -475,6 +499,9 @@ class HMIState:
                 "joy": [round(float(v), 2) for v in c.joy],
                 "rec": {"on": True, "rows": self.recorder.rows,
                         "file": self.recorder.voyage_path.split("/")[-1]},
+                "nmea": self.nmea.status(),
+                "mbus": {"port": self.mbus.port,
+                         "clients": self.mbus.clients},
             }
 
     # --------------------------------------------------------- команды
