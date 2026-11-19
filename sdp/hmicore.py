@@ -540,4 +540,10 @@ class HMIState:
             elif act == "ack":
                 for a in self.alarms:
                     a["acked"] = True
+            elif act == "ack_one":
+                # квитирование щелчком по конкретной аварии (MG 6.1.10)
+                aid = int(cmd.get("id", 0))
+                for a in self.alarms:
+                    if a["id"] == aid:
+                        a["acked"] = True
             return {"ok": True}

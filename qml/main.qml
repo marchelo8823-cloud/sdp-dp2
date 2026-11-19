@@ -1361,6 +1361,7 @@ ApplicationWindow {
 
             DpPanel {
                 title: "Аварийный журнал"
+                rightTitle: "клик = квитировать"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredWidth: 320
@@ -1372,9 +1373,12 @@ ApplicationWindow {
                     spacing: 2
                     model: root.hasData() ? Telem.state.alarms : []
                     delegate: Rectangle {
-                        property bool expanded: false
+                        // клик по аварии = её квитирование (MG 6.1.10);
+                        // пояснение раскрывается при наведении
+                        readonly property bool hov: rowMa.containsMouse
+                                                     && !!modelData.hint
                         width: alarmView.width
-                        height: expanded && modelData.hint
+                        height: hov
                                 ? mainTxt.implicitHeight
                                   + hintTxt.implicitHeight + 10
                                 : 22
@@ -1399,8 +1403,8 @@ ApplicationWindow {
                                   : modelData.t.toFixed(0) + " с")
                                   + "   " + modelData.text
                                   + (modelData.hint
-                                     ? (parent.expanded ? "  ▾" : "  ▸")
-                                     : "")
+                                     ? (parent.hov ? "  ▾" : "  ▸") : "")
+                                  + (modelData.acked ? "   ✓" : "")
                             wrapMode: Text.Wrap
                             font.pixelSize: 11
                             font.family: "Menlo"
@@ -1415,16 +1419,24 @@ ApplicationWindow {
                             width: parent.width - 16
                             anchors.top: mainTxt.bottom
                             anchors.topMargin: 3
-                            visible: parent.expanded && modelData.hint
+                            visible: parent.hov
                             text: modelData.hint ? modelData.hint : ""
                             wrapMode: Text.Wrap
                             font.pixelSize: 10
                             color: root.pal.dim
                         }
                         MouseArea {
+                            id: rowMa
                             anchors.fill: parent
-                            enabled: !!modelData.hint
-                            onClicked: parent.expanded = !parent.expanded
+                            hoverEnabled: true
+                            cursorShape: modelData.acked
+                                         ? Qt.ArrowCursor
+                                         : Qt.PointingHandCursor
+                            onClicked: {
+                                if (!modelData.acked)
+                                    Telem.cmd({ "action": "ack_one",
+                                                "id": modelData.id });
+                            }
                         }
                     }
                 }
