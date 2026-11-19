@@ -1278,11 +1278,16 @@ ApplicationWindow {
                     spacing: 2
                     model: root.hasData() ? Telem.state.alarms : []
                     delegate: Rectangle {
+                        property bool expanded: false
                         width: alarmView.width
-                        height: 22
+                        height: expanded && modelData.hint
+                                ? mainTxt.implicitHeight
+                                  + hintTxt.implicitHeight + 10
+                                : 22
                         radius: 3
                         color: root.pal.panel2
                         opacity: modelData.acked ? 0.45 : 1.0
+                        Behavior on height { NumberAnimation { duration: 120 } }
                         Rectangle {
                             width: 3
                             height: parent.height
@@ -1291,17 +1296,41 @@ ApplicationWindow {
                                  : root.pal.line
                         }
                         Text {
+                            id: mainTxt
                             x: 10
-                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - 16
+                            anchors.top: parent.top
+                            anchors.topMargin: 4
                             text: (modelData.clock ? modelData.clock
                                   : modelData.t.toFixed(0) + " с")
                                   + "   " + modelData.text
+                                  + (modelData.hint
+                                     ? (parent.expanded ? "  ▾" : "  ▸")
+                                     : "")
+                            wrapMode: Text.Wrap
                             font.pixelSize: 11
                             font.family: "Menlo"
                             color: modelData.acked ? root.pal.dim
                                  : modelData.level === 2 ? root.red
                                  : modelData.level === 1 ? root.yellow
                                  : root.pal.txt
+                        }
+                        Text {
+                            id: hintTxt
+                            x: 10
+                            width: parent.width - 16
+                            anchors.top: mainTxt.bottom
+                            anchors.topMargin: 3
+                            visible: parent.expanded && modelData.hint
+                            text: modelData.hint ? modelData.hint : ""
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 10
+                            color: root.pal.dim
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !!modelData.hint
+                            onClicked: parent.expanded = !parent.expanded
                         }
                     }
                 }
