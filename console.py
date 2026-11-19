@@ -76,6 +76,15 @@ class DPConsole:
         self.ff = np.zeros(3)
         self.paused = False
         self.thrust_released = False   # аварийное снятие упора (нет курса)
+        # --- ручное управление (джойстик) ---
+        self.mode = "auto"        # auto | man_joy | auto_joy
+        self.joy = np.zeros(3)    # доли от шкалы: [продольная, боковая, момент]
+        # шкала полного отклонения: ~60 % суммарной тяги; момент —
+        # из расчёта ~1–2 °/с на умеренном отклонении (как реальный
+        # джойстик DP: полный ход ≈ 60–90 °/мин установившегося поворота)
+        f_sum = sum(th.t_max for th in self.thrusters)
+        m_sum = sum(th.t_max * max(abs(th.lx), 1.0) for th in self.thrusters)
+        self.joy_scale = np.array([0.6 * f_sum, 0.6 * f_sum, 0.08 * m_sum])
         self.trail = []           # (N, E) для трассы на карте
         self.conseq_text = "…"
         self.conseq_level = 0     # 0 ok, 1 warn, 2 alarm
@@ -120,11 +129,29 @@ class DPConsole:
         self.ff = (ff_wind
                    + Vessel3DOF.R(self.observer.eta_hat[2]) @ dob_body
                    + self.observer.bias_hat)
-        self.tau_cmd = self.controller.compute(
-            self.eta_d, self.observer.eta_hat, self.observer.nu_hat,
-            self.ff, DT)
-        if self.thrust_released:
-            # упор снят: команды движителям 0 %, судно дрейфует
+        # --- формирование команды по режиму ---
+        if self.mode == "man_joy":
+            # MAN JOY: чистое ручное управление, без ветровой компенсации;
+            # интегратор PID не копит ошибку, пока автоматика отключена
+            self.controller.integral[:] = 0.0
+            self.tau_cmd = self.joy * self.joy_scale
+        elif self.mode == "auto_joy":
+            # AUTO JOY: руки задают продольную/боковую силу,
+            # курс держит автоматика (PID только по рысканью)
+            tau_pid = self.controller.compute(
+                self.eta_d, self.observer.eta_hat, self.observer.nu_hat,
+                self.ff, DT)
+            self.tau_cmd = np.array([self.joy[0] * self.joy_scale[0],
+                                     self.joy[1] * self.joy_scale[1],
+                                     tau_pid[2]])
+        else:
+            self.tau_cmd = self.controller.compute(
+                self.eta_d, self.observer.eta_hat, self.observer.nu_hat,
+                self.ff, DT)
+        if self.thrust_released and self.mode == "auto":
+            # упор снят: команды движителям 0 %, судно дрейфует;
+            # в ручных режимах джойстик доступен и после снятия упора —
+            # это и есть его назначение (как MAN JOY в K-Pos)
             self.tau_cmd = np.zeros(3)
         u, alpha, tau_alloc = self.allocator.allocate(self.tau_cmd, DT)
         self.eta, self.nu = self.vessel.step(self.eta, self.nu,
@@ -146,6 +173,19 @@ class DPConsole:
 
     def set_setpoint(self, north, east):
         self.eta_d[0], self.eta_d[1] = float(north), float(east)
+
+    def set_mode(self, mode):
+        """Переключение режима: auto | man_joy | auto_joy."""
+        assert mode in ("auto", "man_joy", "auto_joy")
+        if mode != self.mode:
+            self.controller.reset()
+            if mode == "auto":
+                self.joy[:] = 0.0
+        self.mode = mode
+
+    def set_joystick(self, fx, fy, m):
+        """Отклонение джойстика, доли −1..1 (зажимается)."""
+        self.joy = np.clip([fx, fy, m], -1.0, 1.0)
 
     def bump_heading(self, d_deg):
         self.eta_d[2] = (self.eta_d[2] + np.deg2rad(d_deg) + np.pi) \

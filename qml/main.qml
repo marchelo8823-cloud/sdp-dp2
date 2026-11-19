@@ -89,6 +89,12 @@ ApplicationWindow {
             root.trend.push([s.pos_err, s.wind_meas.speed_kn,
                              root.thrustSmooth]);
             if (root.trend.length > 2400) root.trend.shift();
+            // джойстик: синхронизация ручки с состоянием сервера
+            if (s.joy !== undefined && !joyPadArea.pressed) {
+                joyPad.jx = s.joy[1];
+                joyPad.jy = s.joy[0];
+                joyPad.requestPaint();
+            }
             posPlot.requestPaint();
             compass.requestPaint();
             windRose.requestPaint();
@@ -227,18 +233,25 @@ ApplicationWindow {
         id: control
         property bool danger: false
         property bool accent: false
+        property bool active: false
         padding: 6
         contentItem: Text {
             text: control.text
-            color: control.danger ? root.red : root.pal.txt
+            color: control.danger ? root.red
+                 : control.active ? root.cyan : root.pal.txt
             font.pixelSize: 12
+            font.bold: control.active
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
-            color: control.down ? root.pal.line : root.pal.panel2
+            color: control.down ? root.pal.line
+                 : control.active ? Qt.rgba(root.cyan.r, root.cyan.g,
+                                            root.cyan.b, 0.15)
+                 : root.pal.panel2
             radius: 4
             border.color: control.danger ? root.red
+                        : control.active ? root.cyan
                         : control.accent ? root.orange : root.pal.line
         }
     }
@@ -269,14 +282,18 @@ ApplicationWindow {
                     font.letterSpacing: 0.5
                 }
                 Rectangle {
-                    color: root.blue
+                    color: root.hasData() && Telem.state.mode !== "auto"
+                           ? root.orange : root.blue
                     radius: 3
                     implicitWidth: modeTxt.implicitWidth + 20
                     implicitHeight: 22
                     Text {
                         id: modeTxt
                         anchors.centerIn: parent
-                        text: "AUTO POSITION"
+                        text: !root.hasData() ? "AUTO POSITION"
+                            : Telem.state.mode === "man_joy" ? "MAN JOY"
+                            : Telem.state.mode === "auto_joy" ? "AUTO JOY"
+                            : "AUTO POSITION"
                         color: "white"
                         font.pixelSize: 11
                         font.bold: true
@@ -1174,6 +1191,139 @@ ApplicationWindow {
                             onClicked: Telem.cmd({ "action": "limits",
                                                    "warn": wcW.value,
                                                    "alarm": wcA.value })
+                        }
+                    }
+                }
+            }
+
+            // ===== джойстик (MAN JOY / AUTO JOY)
+            DpPanel {
+                title: "Джойстик"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 250
+                Layout.minimumWidth: 210
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 4
+                    RowLayout {
+                        spacing: 4
+                        DpButton {
+                            text: "АВТО"
+                            active: root.hasData() && Telem.state.mode === "auto"
+                            onClicked: Telem.cmd({ "action": "mode", "mode": "auto" })
+                        }
+                        DpButton {
+                            text: "MAN"
+                            active: root.hasData() && Telem.state.mode === "man_joy"
+                            onClicked: Telem.cmd({ "action": "mode", "mode": "man_joy" })
+                        }
+                        DpButton {
+                            text: "AUTO JOY"
+                            active: root.hasData() && Telem.state.mode === "auto_joy"
+                            onClicked: Telem.cmd({ "action": "mode", "mode": "auto_joy" })
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        spacing: 6
+                        // пультовая площадка: вверх = вперёд, вправо = на правый борт
+                        Canvas {
+                            id: joyPad
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: 110
+                            property real jx: 0    // боковая (вправо +)
+                            property real jy: 0    // продольная (вперёд +)
+                            function sendJoy() {
+                                Telem.cmd({ "action": "joystick",
+                                            "fx": jy, "fy": jx,
+                                            "m": yawJoy.value })
+                            }
+                            onPaint: {
+                                var ctx = getContext("2d");
+                                ctx.reset();
+                                var w = width, h = height;
+                                var R = Math.max(20, Math.min(w, h) / 2 - 8);
+                                var cx = w / 2, cy = h / 2;
+                                ctx.fillStyle = root.pal.panel2;
+                                ctx.strokeStyle = root.pal.line;
+                                ctx.lineWidth = 1;
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+                                ctx.fill(); ctx.stroke();
+                                ctx.setLineDash([3, 3]);
+                                ctx.beginPath();
+                                ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+                                ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+                                ctx.stroke();
+                                ctx.setLineDash([]);
+                                ctx.fillStyle = root.pal.dim;
+                                ctx.font = "9px Menlo";
+                                ctx.textAlign = "center";
+                                ctx.fillText("ВПЕРЁД", cx, cy - R + 10);
+                                ctx.fillText("ПБ", cx + R - 12, cy + 3);
+                                // ручка
+                                var hx = cx + jx * (R - 12);
+                                var hy = cy - jy * (R - 12);
+                                ctx.beginPath();
+                                ctx.arc(hx, hy, 10, 0, 2 * Math.PI);
+                                ctx.fillStyle = root.cyan;
+                                ctx.fill();
+                                ctx.strokeStyle = root.pal.txt;
+                                ctx.stroke();
+                            }
+                            MouseArea {
+                                id: joyPadArea
+                                anchors.fill: parent
+                                function upd(mx, my) {
+                                    var R = Math.max(20,
+                                            Math.min(width, height) / 2 - 8) - 12;
+                                    var dx = (mx - width / 2) / R;
+                                    var dy = -(my - height / 2) / R;
+                                    var m = Math.hypot(dx, dy);
+                                    if (m > 1) { dx /= m; dy /= m; }
+                                    joyPad.jx = dx; joyPad.jy = dy;
+                                    joyPad.sendJoy();
+                                    joyPad.requestPaint();
+                                }
+                                onPressed: upd(mouse.x, mouse.y)
+                                onPositionChanged: if (pressed)
+                                    upd(mouse.x, mouse.y)
+                            }
+                        }
+                        // момент (рысканье): вертикальный ползунок
+                        ColumnLayout {
+                            spacing: 2
+                            Text { text: "М"; color: root.pal.dim; font.pixelSize: 10; Layout.alignment: Qt.AlignHCenter }
+                            Slider {
+                                id: yawJoy
+                                orientation: Qt.Vertical
+                                Layout.fillHeight: true
+                                from: -1; to: 1; value: 0; stepSize: 0.05
+                                onMoved: joyPad.sendJoy()
+                            }
+                        }
+                    }
+                    RowLayout {
+                        spacing: 4
+                        DpButton {
+                            text: "Центр"
+                            onClicked: {
+                                joyPad.jx = 0; joyPad.jy = 0;
+                                yawJoy.value = 0;
+                                joyPad.sendJoy();
+                                joyPad.requestPaint();
+                            }
+                        }
+                        Text {
+                            color: root.pal.dim; font.pixelSize: 10
+                            text: root.hasData() && Telem.state.joy
+                                  ? "F " + (Telem.state.joy[0] * 100).toFixed(0)
+                                    + " / " + (Telem.state.joy[1] * 100).toFixed(0)
+                                    + "  M " + (Telem.state.joy[2] * 100).toFixed(0) + " %"
+                                  : "—"
                         }
                     }
                 }

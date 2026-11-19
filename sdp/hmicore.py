@@ -271,6 +271,8 @@ class HMIState:
                 "alarm_pos": self.alarm_pos,
                 "speed": self.speed,
                 "paused": c.paused,
+                "mode": c.mode,
+                "joy": [round(float(v), 2) for v in c.joy],
             }
 
     # --------------------------------------------------------- команды
@@ -285,6 +287,17 @@ class HMIState:
                                       self.con.eta_d[1] + float(cmd["de"]))
             elif act == "heading":
                 self.con.eta_d[2] = np.deg2rad(float(cmd["deg"]))
+            elif act == "mode":
+                m = cmd["mode"]
+                self.con.set_mode(m)
+                label = {"auto": "АВТО (удержание позиции)",
+                         "man_joy": "MAN JOY — ручное управление",
+                         "auto_joy": "AUTO JOY — ручное + автокурс"}[m]
+                self._raise(f"РЕЖИМ: {label}", 0)
+            elif act == "joystick":
+                self.con.set_joystick(float(cmd.get("fx", 0.0)),
+                                      float(cmd.get("fy", 0.0)),
+                                      float(cmd.get("m", 0.0)))
             elif act == "heading_bump":
                 self.con.bump_heading(cmd["d_deg"])
             elif act == "wind":
