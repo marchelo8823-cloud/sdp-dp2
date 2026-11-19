@@ -11,10 +11,12 @@ command() — команды оператора и инструктора.
 """
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 
 from console import DPConsole
+from sdp.capability_live import live_polar
 from sdp.redundancy import GYRO_DISAGREE_DEG, DEV_LIM
 
 DT = 0.1
@@ -44,9 +46,75 @@ class HMIState:
         self._released = False
         self._sen_prev = None        # снимок состояний датчиков (фронты)
         self._prs_dis_prev = False   # фронт аварии «расхождение PRS»
+        # --- онлайн-диаграмма возможностей (K-Pos №10): фоновый пересчёт
+        self._cap = {"betas": [], "intact": [], "worst": []}
+        self._cap_key = None
         self._sim_thread = threading.Thread(target=self._sim_loop,
                                             daemon=True)
         self._sim_thread.start()
+        self._cap_thread = threading.Thread(target=self._cap_loop,
+                                            daemon=True)
+        self._cap_thread.start()
+
+    # --------------------------------------------------------- capability
+    def _cap_loop(self):
+        """Пересчёт поляры предельного ветра при смене конфигурации/Hs.
+
+        Тяжёлый статический расчёт (бисекция × QP) идёт вне основного
+        контура, чтобы не тормозить шаг симуляции; в snapshot попадает
+        последний готовый результат — как отдельный вычислитель
+        capability на реальном пульте.
+        """
+        while True:
+            time.sleep(2.0)
+            try:
+                with self.lock:
+                    c = self.con
+                    key = (tuple(bool(t.failed) for t in c.thrusters),
+                           round(c.hs, 1))
+                    if key == self._cap_key:
+                        continue
+                    ths = [SimpleNamespace(
+                        lx=t.lx, ly=t.ly, t_max=t.t_max,
+                        tunnel=getattr(t, "tunnel", False),
+                        failed=bool(t.failed)) for t in c.thrusters]
+                    hs = c.hs
+                betas, intact, worst = live_polar(ths, hs)
+                cap = {
+                    "betas": [round(float(b), 0) for b in betas],
+                    "intact": [round(float(v) * KN, 1) for v in intact],
+                    "worst": [round(float(v) * KN, 1) for v in worst],
+                }
+                with self.lock:
+                    self._cap = cap
+                    self._cap_key = key
+            except Exception:                            # noqa: BLE001
+                # расчёт capability не должен ронять пульт
+                time.sleep(5.0)
+
+    def _cap_margin(self, c):
+        """Предел и запас по ветру при текущем направлении среды.
+
+        Интерполяция кривой worst (ещё один отказ) на направление
+        измеренного ветра относительно носа.
+        """
+        cap = self._cap
+        if not cap["betas"]:
+            return None, None
+        beta = (float(np.rad2deg(c.g_m)) - float(np.rad2deg(c.eta[2]))) % 360.0
+        step = 360.0 / len(cap["betas"])
+        k = int(round(beta / step)) % len(cap["betas"])
+        lim = cap["worst"][k]
+        margin = lim - c.V_m * KN
+        return round(lim, 1), round(margin, 1)
+
+    def _cap_snapshot(self, c):
+        lim, margin = self._cap_margin(c)
+        return {"betas": self._cap["betas"],
+                "intact": self._cap["intact"],
+                "worst": self._cap["worst"],
+                "limit_kn": lim,
+                "margin_kn": margin}
 
     # --------------------------------------------------------- аварии
     def _raise(self, text, level):
@@ -256,6 +324,7 @@ class HMIState:
                             "prs_detail": c.sensors.prs_detail(),
                             "gyro_detail": c.sensors.gyro_detail()},
                 "conseq": {"level": c.conseq_level, "text": c.conseq_text},
+                "capability": self._cap_snapshot(c),
                 "degrad": self.degradation(),
                 # ветер относительно судна: от носа / от правого борта
                 "wind_rel": {

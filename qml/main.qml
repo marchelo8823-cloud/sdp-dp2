@@ -878,6 +878,68 @@ ApplicationWindow {
                             }
                             if (!root.hasData()) return;
                             var s = Telem.state;
+                            // --- диаграмма возможностей (K-Pos №10):
+                            // поляры предельного ветра от носа, повёрнутые
+                            // на текущий курс; шкала 60 kn = полный радиус
+                            var cap = s.capability;
+                            if (cap && cap.betas && cap.betas.length > 0) {
+                                var FULL_KN = 60.0;
+                                function envRadius(v) {
+                                    return Math.min(v / FULL_KN, 1.0) * R;
+                                }
+                                function drawEnv(vals, color, width) {
+                                    ctx.beginPath();
+                                    for (var k = 0; k <= cap.betas.length; k++) {
+                                        var i = k % cap.betas.length;
+                                        var brg = (s.hdg_deg + cap.betas[i])
+                                                  * Math.PI / 180;
+                                        var rr = envRadius(vals[i]);
+                                        var px = cx + rr * Math.sin(brg);
+                                        var py = cy - rr * Math.cos(brg);
+                                        if (k === 0) ctx.moveTo(px, py);
+                                        else ctx.lineTo(px, py);
+                                    }
+                                    ctx.closePath();
+                                    ctx.strokeStyle = color;
+                                    ctx.lineWidth = width;
+                                    ctx.stroke();
+                                }
+                                // зона, выдерживаемая после ещё одного
+                                // отказа — мягкая заливка
+                                ctx.save();
+                                ctx.globalAlpha = 0.10;
+                                ctx.beginPath();
+                                for (var k2 = 0; k2 <= cap.betas.length; k2++) {
+                                    var i2 = k2 % cap.betas.length;
+                                    var brg2 = (s.hdg_deg + cap.betas[i2])
+                                               * Math.PI / 180;
+                                    var rr2 = envRadius(cap.worst[i2]);
+                                    var px2 = cx + rr2 * Math.sin(brg2);
+                                    var py2 = cy - rr2 * Math.cos(brg2);
+                                    if (k2 === 0) ctx.moveTo(px2, py2);
+                                    else ctx.lineTo(px2, py2);
+                                }
+                                ctx.closePath();
+                                ctx.fillStyle = root.green;
+                                ctx.fill();
+                                ctx.restore();
+                                drawEnv(cap.intact, root.green, 1.2);
+                                drawEnv(cap.worst, root.orange, 1.8);
+                                // маркер текущего ветра (по измеренному):
+                                // точка на подветренной стороне; красная,
+                                // если за пределом «ещё один отказ»
+                                var wr = Math.min(s.wind_meas.speed_kn
+                                                  / FULL_KN, 1.0) * R;
+                                var wbrg = s.wind_dir * Math.PI / 180;
+                                var okM = cap.margin_kn === null
+                                          || cap.margin_kn >= 0;
+                                ctx.beginPath();
+                                ctx.arc(cx + wr * Math.sin(wbrg),
+                                        cy - wr * Math.cos(wbrg),
+                                        4, 0, 2 * Math.PI);
+                                ctx.fillStyle = okM ? root.cyan : root.red;
+                                ctx.fill();
+                            }
                             ctx.save();
                             ctx.translate(cx, cy);
                             ctx.rotate(s.wind_dir * Math.PI / 180);
@@ -903,6 +965,15 @@ ApplicationWindow {
                     KV { k: "Истинный"; v: root.hasData() ? Telem.state.wind_true.speed_kn.toFixed(1) + " kn  " + Telem.state.wind_true.dir_deg.toFixed(0) + "°" : "—" }
                     KV { k: "Волна Hs / Tp"; v: root.hasData() ? Telem.state.hs.toFixed(1) + " м / " + Telem.state.tp.toFixed(0) + " с" : "—" }
                     KV { k: "От носа / пр. борта"; v: root.hasData() ? Telem.state.wind_rel.bow_kn.toFixed(1) + " / " + Telem.state.wind_rel.stbd_kn.toFixed(1) + " kn" : "—" }
+                    KV { k: "Предел DP-2 (ещё отказ)"; v: root.hasData() && Telem.state.capability && Telem.state.capability.limit_kn != null ? Telem.state.capability.limit_kn.toFixed(0) + " kn" : "—" }
+                    KV {
+                        k: "Запас по ветру"
+                        v: root.hasData() && Telem.state.capability && Telem.state.capability.margin_kn != null ? (Telem.state.capability.margin_kn >= 0 ? "+" : "") + Telem.state.capability.margin_kn.toFixed(0) + " kn" : "—"
+                        vColor: !root.hasData() || !Telem.state.capability || Telem.state.capability.margin_kn == null ? root.pal.txt
+                              : Telem.state.capability.margin_kn < 0 ? root.red
+                              : Telem.state.capability.margin_kn < 10 ? root.yellow
+                              : root.green
+                    }
                 }
             }
 
