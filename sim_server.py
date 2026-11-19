@@ -34,8 +34,8 @@ CLIENT_TTL = 30.0          # молчание клиента → отписка
 
 
 class SimServer:
-    def __init__(self, port=CMD_PORT_DEFAULT):
-        self.state = HMIState()
+    def __init__(self, port=CMD_PORT_DEFAULT, profile="4dru"):
+        self.state = HMIState(profile=profile)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("127.0.0.1", port))
@@ -100,8 +100,12 @@ class SimServer:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=CMD_PORT_DEFAULT)
+    p.add_argument("--profile", default="4dru",
+                   choices=["4dru", "sdp2"],
+                   help="профиль судна: 4dru — учебный DP-2, "
+                        "sdp2 — СДП-2 (8 движителей, Praxis)")
     args = p.parse_args()
-    SimServer(args.port).serve()
+    SimServer(args.port, profile=args.profile).serve()
 
 
 if __name__ == "__main__":

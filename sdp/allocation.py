@@ -88,9 +88,15 @@ class AzimuthThruster:
     def __init__(self, lx, ly, t_max=2.5e5, az0_deg=0.0,
                  az_rate_deg_s=12.0, forbidden_zones=(), tunnel=False,
                  thrust_tau=2.0, reverse_time=15.0, az_tau=0.2,
-                 servo_err_deg=0.0):
+                 servo_err_deg=0.0, t_min=None, thrust_rate=None,
+                 name=""):
         self.lx, self.ly = lx, ly
         self.t_max = t_max
+        # t_min — предел реверса (асимметричный, напр. ВРШ −25 %);
+        # thrust_rate — темп изменения тяги, Н/с (Praxis: 15 %/с)
+        self.t_min = -t_max if t_min is None else t_min
+        self.thrust_rate = thrust_rate
+        self.name = name
         self.az_rate = np.deg2rad(az_rate_deg_s)
         self.forbidden_zones = [tuple(np.deg2rad(z)) for z in forbidden_zones]
         self.tunnel = tunnel
@@ -127,7 +133,10 @@ class AzimuthThruster:
                 self._reversing = False
         else:
             step = du * min(1.0, dt / max(self.thrust_tau, dt))
-        self.u = np.clip(self.u + step, -self.t_max, self.t_max)
+            if self.thrust_rate:
+                step = np.clip(step, -self.thrust_rate * dt,
+                               self.thrust_rate * dt)
+        self.u = np.clip(self.u + step, self.t_min, self.t_max)
 
     @property
     def alpha_eff(self):
@@ -242,7 +251,7 @@ class AzimuthAllocator:
         da = np.clip(da, -th.az_rate * dt, th.az_rate * dt)
         alpha_new = wrap_pi(th.alpha + da)
         # Тяга с учётом фактического угла (проекция запрошенной силы)
-        u_new = np.clip(u_des, -th.t_max, th.t_max)
+        u_new = np.clip(u_des, th.t_min, th.t_max)
         return u_new, alpha_new
 
     # --- Тяга на текущих осях (как в промышленных аллокаторах) -------------
@@ -310,7 +319,7 @@ class AzimuthAllocator:
                 th.step_drive(0.0, th.alpha, dt)
                 continue
             _, alpha_cmd = self._apply_azimuth_limits(th, f2d[i], dt)
-            th.step_drive(np.clip(u_cmd[i], -th.t_max, th.t_max),
+            th.step_drive(np.clip(u_cmd[i], th.t_min, th.t_max),
                           alpha_cmd, dt)
         # Сила — по фактическому углу оси (с серво-ошибкой)
         f_act = np.array([[th.u * np.cos(th.alpha_eff),

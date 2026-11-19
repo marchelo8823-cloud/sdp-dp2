@@ -40,8 +40,9 @@ class DPConsole:
     def __init__(self, seed=42, hs=2.0, tp=7.0, wind_speed=10.0,
                  wind_dir=30.0, mismatch=1.3,
                  current_force=(1.0e4, 8.0e3, 0.0),
-                 anem_lag=5.0, anem_noise=0.3):
+                 anem_lag=5.0, anem_noise=0.3, profile="4dru"):
         self.seed = seed
+        self.profile = profile
         self.hs, self.tp = hs, tp
         self.mismatch = mismatch
         self.current_force = np.asarray(current_force, float)
@@ -61,7 +62,11 @@ class DPConsole:
         from sdp.disturbance import RBFDisturbanceObserver
         self.dob = RBFDisturbanceObserver()
         self.controller = PIDController()
-        self.thrusters = default_thrusters()
+        if self.profile == "4dru":
+            self.thrusters = default_thrusters()
+        else:
+            from sdp.profiles import build_thrusters
+            self.thrusters = build_thrusters(self.profile)
         self.allocator = AzimuthAllocator(self.thrusters)
         self.consequence = ConsequenceAnalyzer(self.thrusters)
         self.sensors = SensorSuite(seed=self.seed + 1)

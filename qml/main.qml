@@ -483,6 +483,7 @@ ApplicationWindow {
                 }
                 // voyage recorder — индикация записи
                 Text {
+                    id: recLamp
                     visible: root.hasData() && Telem.state.rec
                              && Telem.state.rec.on
                     text: "● REC"
@@ -490,7 +491,7 @@ ApplicationWindow {
                     font.pixelSize: 11
                     font.bold: true
                     SequentialAnimation on opacity {
-                        running: parent.visible
+                        running: recLamp.visible
                         loops: Animation.Infinite
                         NumberAnimation { to: 0.35; duration: 800 }
                         NumberAnimation { to: 1.0; duration: 800 }
@@ -1062,10 +1063,10 @@ ApplicationWindow {
                             var s = Telem.state;
                             ctx.font = "10px Menlo";
                             ctx.textAlign = "center";
-                            for (var i = 0; i < 4; i++) {
+                            for (var i = 0; i < s.thrusters.length; i++) {
                                 var t = s.thrusters[i];
-                                var pos = scr(root.thrPos[i][0],
-                                              root.thrPos[i][1]);
+                                var pos = scr(t.lx != null ? t.lx : 0,
+                                              t.ly != null ? t.ly : 0);
                                 var au = Math.abs(t.u_pct);
                                 var col = t.failed ? root.red
                                         : au < 60 ? root.green
@@ -1097,6 +1098,10 @@ ApplicationWindow {
                                 else
                                     ctx.fillRect(pos[0] + 17, pos[1] + 15,
                                                  7, bh);
+                                ctx.fillStyle = root.pal.dim;
+                                ctx.fillText(t.name != null ? t.name
+                                                            : "ДРУ" + (i + 1),
+                                             pos[0], pos[1] - 20);
                                 ctx.fillStyle = root.pal.txt;
                                 ctx.fillText(t.failed ? "ОТКАЗ"
                                     : t.alpha_deg.toFixed(0) + "° "
@@ -1478,26 +1483,23 @@ ApplicationWindow {
                     spacing: 4
                     RowLayout {
                         spacing: 4
-                        // кнопка-переключатель: отказ ↔ возврат агрегата
-                        DpButton {
-                            property bool f: root.hasData() && Telem.state.thrusters[0].failed
-                            text: f ? "ДРУ1↩" : "ДРУ1"; accent: true
-                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 0 } : { "action": "fail", "kind": "thruster", "idx": 0 })
-                        }
-                        DpButton {
-                            property bool f: root.hasData() && Telem.state.thrusters[1].failed
-                            text: f ? "ДРУ2↩" : "ДРУ2"; accent: true
-                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 1 } : { "action": "fail", "kind": "thruster", "idx": 1 })
-                        }
-                        DpButton {
-                            property bool f: root.hasData() && Telem.state.thrusters[2].failed
-                            text: f ? "ДРУ3↩" : "ДРУ3"; accent: true
-                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 2 } : { "action": "fail", "kind": "thruster", "idx": 2 })
-                        }
-                        DpButton {
-                            property bool f: root.hasData() && Telem.state.thrusters[3].failed
-                            text: f ? "ДРУ4↩" : "ДРУ4"; accent: true
-                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": 3 } : { "action": "fail", "kind": "thruster", "idx": 3 })
+                        // кнопки-переключатели отказ ↔ возврат: по одной
+                        // на движитель активного профиля (4 или 8)
+                        Repeater {
+                            model: root.hasData() ? Telem.state.thrusters.length : 0
+                            DpButton {
+                                required property int index
+                                property bool f: root.hasData()
+                                    && Telem.state.thrusters.length > index
+                                    && Telem.state.thrusters[index].failed
+                                property string nm: root.hasData()
+                                    && Telem.state.thrusters.length > index
+                                    && Telem.state.thrusters[index].name != null
+                                    ? Telem.state.thrusters[index].name
+                                    : "ДРУ" + (index + 1)
+                                text: f ? nm + "↩" : nm; accent: true
+                                onClicked: Telem.cmd(f ? { "action": "recover", "kind": "thruster", "idx": index } : { "action": "fail", "kind": "thruster", "idx": index })
+                            }
                         }
                         DpButton {
                             property bool f: root.hasData() && Telem.state.sensors.prs[2]

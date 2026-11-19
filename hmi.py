@@ -115,9 +115,14 @@ def make_backend(argv):
         if be.state() is not None:
             return be
         time.sleep(0.05)
-    # сервер не найден — поднимаем свой
-    subprocess.Popen([sys.executable, str(HERE / "sim_server.py")],
-                     cwd=str(HERE),
+    # сервер не найден — поднимаем свой (пробрасываем --profile,
+    # если задан клиенту: hmi_qml.py --profile sdp2)
+    srv_argv = [sys.executable, str(HERE / "sim_server.py")]
+    if "--profile" in argv:
+        i = argv.index("--profile")
+        if i + 1 < len(argv):
+            srv_argv += ["--profile", argv[i + 1]]
+    subprocess.Popen(srv_argv, cwd=str(HERE),
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 4.0
     while time.monotonic() < deadline:

@@ -29,9 +29,9 @@ KN = 1.94384          # м/с → узлы
 class HMIState:
     """Симуляция + аварийный журнал + настройки пульта (потокобезопасно)."""
 
-    def __init__(self):
+    def __init__(self, profile="4dru"):
         self.lock = threading.Lock()
-        self.con = DPConsole()
+        self.con = DPConsole(profile=profile)
         self.speed = 5.0
         self.warn_pos = 3.0     # жёлтый watch circle, м
         self.alarm_pos = 5.0    # красный watch circle, м
@@ -436,7 +436,11 @@ class HMIState:
             thr = [{"u_pct": round(100 * th.u / th.t_max, 1),
                     "alpha_deg": round(float(np.rad2deg(th.alpha)), 1),
                     "failed": bool(th.failed),
-                    "tunnel": bool(th.tunnel)} for th in c.thrusters]
+                    "tunnel": bool(th.tunnel),
+                    "lx": round(float(th.lx), 1),
+                    "ly": round(float(th.ly), 1),
+                    "name": getattr(th, "name", "") or f"ДРУ{i + 1}"}
+                   for i, th in enumerate(c.thrusters)]
             # результирующая сила движителей (body)
             fx = sum(th.u * np.cos(th.alpha) for th in c.thrusters)
             fy = sum(th.u * np.sin(th.alpha) for th in c.thrusters)
@@ -445,6 +449,7 @@ class HMIState:
                      for th in c.thrusters)
             return {
                 "t": round(c.t, 1),
+                "profile": c.profile,
                 "eta": [round(float(v), 3) for v in c.eta],
                 "eta_d": [round(float(v), 3) for v in c.eta_d],
                 "pos_err": round(c.pos_err, 2),

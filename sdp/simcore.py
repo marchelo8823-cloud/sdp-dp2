@@ -40,7 +40,7 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
         dob=False, dob_kw=None, wind_schedule=None,
         setpoint_schedule=None, bias_ff=False,
         mismatch=1.0, current_force=None,
-        anem_lag=0.0, anem_noise=0.0):
+        anem_lag=0.0, anem_noise=0.0, profile="4dru"):
     """Прогон контура с расписанием отказов.
 
     failures — iterable (t_fail, kind, idx):
@@ -92,7 +92,9 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
     else:
         controller = PIDController(**(pid_kw or {}))
         mpc_every = 1
-    thrusters = default_thrusters()
+    thrusters = (default_thrusters() if profile == "4dru"
+                 else __import__("sdp.profiles", fromlist=["build_thrusters"])
+                 .build_thrusters(profile))
     allocator = AzimuthAllocator(thrusters)
     sensors = SensorSuite(seed=seed + 1)
 

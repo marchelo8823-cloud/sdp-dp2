@@ -137,9 +137,12 @@ class ModbusTcpServer:
             0, 0,                             # GYRO2/3 — не моделируются
             0, 0,                             # MRU1 — не моделируется
         ]
-        for n in range(8):                    # THR1..THR8 → наши в THR3..6
-            if 2 <= n < 6:
-                t = thr[n - 2]
+        for n in range(8):                    # THR1..THR8
+            # профиль sdp2 — один-в-один; 4dru — наши четыре в THR3..6
+            t = (thr[n] if len(thr) >= 8
+                 else thr[n - 2] if len(thr) == 4 and 2 <= n < 6
+                 else None)
+            if t:
                 u = t.get("u_pct", 0) * 10
                 a = (t.get("alpha_deg", 0) % 360) * 10
                 vals += [u, u, a, a]          # SP=FB (привод идеальный)
