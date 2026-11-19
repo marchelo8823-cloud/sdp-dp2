@@ -44,6 +44,11 @@ ApplicationWindow {
     property var trend: []
     property real thrustSmooth: -1
     property real lastTrailT: -1
+    // имитатор заблокирован по умолчанию (РС 8.5.7: команды симулятора
+    // на рабочем пульте — потенциально одно непреднамеренное действие);
+    // доступ — удержание замка 2 с
+    property bool instrLock: true
+    property real lockProg: 0
 
     readonly property var shipN: [38, 12, -30, -38, -38, -30, 12]
     readonly property var shipE: [0, 9, 9, 4, -4, -9, -9]
@@ -392,6 +397,46 @@ ApplicationWindow {
                                 + (ss < 10 ? "0" : "") + ss
                                 + (s.paused ? " ⏸" : "")
                                 + " · " + s.speed.toFixed(0) + "×";
+                    }
+                }
+                // состав контура (замечание операторов: режим
+                // регулятора должен быть виден)
+                Rectangle {
+                    radius: 3
+                    implicitWidth: ctrlTxt.implicitWidth + 14
+                    implicitHeight: 20
+                    color: "transparent"
+                    border.color: root.cyan
+                    Text {
+                        id: ctrlTxt
+                        anchors.centerIn: parent
+                        font.pixelSize: 10
+                        font.bold: true
+                        color: root.cyan
+                        text: root.hasData() && Telem.state.ctrl
+                              ? "РЕГ " + Telem.state.ctrl.law
+                                + " · " + Telem.state.ctrl.est
+                                + " · " + Telem.state.ctrl.alloc
+                              : "РЕГ —"
+                    }
+                }
+                Rectangle {
+                    radius: 3
+                    implicitWidth: caTxt.implicitWidth + 14
+                    implicitHeight: 20
+                    color: "transparent"
+                    border.color: root.hasData() && Telem.state.ctrl
+                                  && Telem.state.ctrl.ca_on
+                                  ? root.green : root.red
+                    Text {
+                        id: caTxt
+                        anchors.centerIn: parent
+                        font.pixelSize: 10
+                        font.bold: true
+                        color: parent.border.color
+                        text: root.hasData() && Telem.state.ctrl
+                              && Telem.state.ctrl.ca_on
+                              ? "CA ВКЛ" : "CA ВЫКЛ"
                     }
                 }
                 Rectangle {
@@ -1337,13 +1382,17 @@ ApplicationWindow {
             }
 
             DpPanel {
-                title: "Пульт инструктора"
+                title: root.instrLock ? "Пульт инструктора 🔒"
+                                      : "Пульт инструктора"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredWidth: 330
                 Layout.minimumWidth: 260
+                Item {
+                    anchors.fill: parent
                 ColumnLayout {
                     anchors.fill: parent
+                    visible: !root.instrLock
                     spacing: 4
                     RowLayout {
                         spacing: 4
@@ -1469,6 +1518,63 @@ ApplicationWindow {
                                                    "alarm": wcA.value })
                         }
                     }
+                    DpButton {
+                        text: "🔒 Заблокировать имитатор"
+                        Layout.fillWidth: true
+                        onClicked: root.instrLock = true
+                    }
+                }
+                // ---- замок имитатора: удержание 2 с для доступа
+                Rectangle {
+                    anchors.fill: parent
+                    visible: root.instrLock
+                    color: root.pal.panel2
+                    radius: 4
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 10
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "🔒 ИМИТАТОР ЗАБЛОКИРОВАН"
+                            color: root.pal.dim
+                            font.pixelSize: 13
+                            font.bold: true
+                            font.letterSpacing: 1
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "Нажмите и удерживайте 2 с для доступа"
+                            color: root.pal.dim
+                            font.pixelSize: 11
+                        }
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: 180; height: 6; radius: 3
+                            color: root.pal.line
+                            Rectangle {
+                                width: parent.width * root.lockProg
+                                height: parent.height; radius: 3
+                                color: root.orange
+                            }
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onPressed: lockAnim.restart()
+                        onReleased: { lockAnim.stop(); root.lockProg = 0 }
+                    }
+                    NumberAnimation {
+                        id: lockAnim
+                        target: root
+                        property: "lockProg"
+                        from: 0; to: 1
+                        duration: 2000
+                        onFinished: {
+                            root.instrLock = false;
+                            root.lockProg = 0;
+                        }
+                    }
+                }
                 }
             }
 

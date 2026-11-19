@@ -405,6 +405,10 @@ class HMIState:
                             "prs_detail": self._prs_view(c),
                             "gyro_detail": c.sensors.gyro_detail()},
                 "conseq": {"level": c.conseq_level, "text": c.conseq_text},
+                # состав контура и состояние анализа последствий —
+                # замечание операторов «режим регулятора не виден»
+                "ctrl": {"law": "PID + DOB", "est": "EKF",
+                         "alloc": "VARIABLE", "ca_on": True},
                 "capability": self._cap_snapshot(c),
                 "degrad": self.degradation(),
                 # ветер относительно судна: от носа / от правого борта
