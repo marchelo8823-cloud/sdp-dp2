@@ -18,6 +18,7 @@ import numpy as np
 from console import DPConsole
 from sdp.capability_live import live_polar
 from sdp.redundancy import GYRO_DISAGREE_DEG, DEV_LIM
+from sdp.voyager import VoyageRecorder
 
 DT = 0.1
 KN = 1.94384          # м/с → узлы
@@ -55,6 +56,9 @@ class HMIState:
         self._cap_thread = threading.Thread(target=self._cap_loop,
                                             daemon=True)
         self._cap_thread.start()
+        # --- voyage recorder («чёрный ящик», IMO MSC/Circ.645)
+        self.recorder = VoyageRecorder()
+        self._last_rec_t = -10.0
 
     # --------------------------------------------------------- capability
     def _cap_loop(self):
@@ -119,7 +123,7 @@ class HMIState:
     @staticmethod
     def _prs_view(c):
         """prs_detail + смещение измерения от заданной точки (для меток)."""
-        det = c.sensors.prs_detail()
+        det = c.sensors.prs_detail(t=c.t)
         for d in det:
             if d["xy"] is not None:
                 d["dn"] = round(d["xy"][0] - float(c.eta_d[0]), 2)
@@ -204,6 +208,8 @@ class HMIState:
                                "text": text, "level": level,
                                "hint": hint, "acked": False})
         self.alarms = self.alarms[:50]
+        if hasattr(self, "recorder"):
+            self.recorder.event(f"ALARM{level}", text, self.con.t)
 
     # --------------------------------------------------------- цикл sim
     def _sim_loop(self):
@@ -227,6 +233,46 @@ class HMIState:
                 self._watch_limits()
                 self._watch_degradation()
                 self._watch_sensors()
+                # voyage recorder: телеметрия 1 Гц
+                if self.con.t - self._last_rec_t >= 1.0:
+                    self.recorder.log_row(self._rec_row(self.con))
+                    self._last_rec_t = self.con.t
+
+    @staticmethod
+    def _rec_row(c):
+        return {
+            "t": round(c.t, 1),
+            "clock": time.strftime("%H:%M:%S"),
+            "n": round(float(c.eta[0]), 2),
+            "e": round(float(c.eta[1]), 2),
+            "hdg_deg": round(float(np.rad2deg(c.eta[2])) % 360, 1),
+            "nd": round(float(c.eta_d[0]), 2),
+            "ed": round(float(c.eta_d[1]), 2),
+            "hdg_d_deg": round(float(np.rad2deg(c.eta_d[2])) % 360, 1),
+            "pos_err": round(c.pos_err, 2),
+            "hdg_err_deg": round(c.hdg_err_deg, 2),
+            "sog_kn": round(float(np.hypot(*c.nu[:2])) * KN, 2),
+            "rot_dpm": round(float(np.rad2deg(c.nu[2])) * 60, 1),
+            "wind_meas_kn": round(c.V_m * KN, 1),
+            "wind_meas_deg": round(float(np.rad2deg(c.g_m)) % 360, 0),
+            "wind_true_kn": round(c.wind.V * KN, 1),
+            "wind_true_deg": round(float(np.rad2deg(c.wind.gamma)) % 360, 0),
+            "hs": c.hs,
+            "bias_kn": round(float(np.hypot(*c.observer.bias_hat[:2]))
+                             / 1e3, 1),
+            "u1": round(100 * c.thrusters[0].u / c.thrusters[0].t_max, 1),
+            "u2": round(100 * c.thrusters[1].u / c.thrusters[1].t_max, 1),
+            "u3": round(100 * c.thrusters[2].u / c.thrusters[2].t_max, 1),
+            "u4": round(100 * c.thrusters[3].u / c.thrusters[3].t_max, 1),
+            "az1": round(float(np.rad2deg(c.thrusters[0].alpha)), 0),
+            "az2": round(float(np.rad2deg(c.thrusters[1].alpha)), 0),
+            "az3": round(float(np.rad2deg(c.thrusters[2].alpha)), 0),
+            "az4": round(float(np.rad2deg(c.thrusters[3].alpha)), 0),
+            "failed_mask": "".join(
+                "1" if t.failed else "0" for t in c.thrusters),
+            "mode": c.mode,
+            "conseq_level": c.conseq_level,
+        }
 
     def _watch_degradation(self):
         """Счисление курса/положения и аварийное снятие упора.
@@ -403,7 +449,7 @@ class HMIState:
                 "sensors": {"prs": [bool(f) for f in c.sensors.prs_failed],
                             "gyro": [bool(f) for f in c.sensors.gyro_failed],
                             "prs_detail": self._prs_view(c),
-                            "gyro_detail": c.sensors.gyro_detail()},
+                            "gyro_detail": c.sensors.gyro_detail(t=c.t)},
                 "conseq": {"level": c.conseq_level, "text": c.conseq_text},
                 # состав контура и состояние анализа последствий —
                 # замечание операторов «режим регулятора не виден»
@@ -427,11 +473,19 @@ class HMIState:
                 "paused": c.paused,
                 "mode": c.mode,
                 "joy": [round(float(v), 2) for v in c.joy],
+                "rec": {"on": True, "rows": self.recorder.rows,
+                        "file": self.recorder.voyage_path.split("/")[-1]},
             }
 
     # --------------------------------------------------------- команды
     def command(self, cmd):
         act = cmd.get("action")
+        # журнал событий voyage recorder (кроме служебных)
+        if act not in (None, "subscribe") and hasattr(self, "recorder"):
+            brief = ", ".join(f"{k}={v}" for k, v in cmd.items()
+                              if k != "action")
+            self.recorder.event("CMD", f"{act} {brief}".strip(),
+                                self.con.t)
         with self.lock:
             if act == "setpoint":
                 self.con.set_setpoint(cmd["north"], cmd["east"])

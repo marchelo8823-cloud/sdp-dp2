@@ -481,6 +481,21 @@ ApplicationWindow {
                               ? "CA ВКЛ" : "CA ВЫКЛ"
                     }
                 }
+                // voyage recorder — индикация записи
+                Text {
+                    visible: root.hasData() && Telem.state.rec
+                             && Telem.state.rec.on
+                    text: "● REC"
+                    color: root.red
+                    font.pixelSize: 11
+                    font.bold: true
+                    SequentialAnimation on opacity {
+                        running: parent.visible
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.35; duration: 800 }
+                        NumberAnimation { to: 1.0; duration: 800 }
+                    }
+                }
                 Rectangle {
                     id: lamp
                     radius: 3
@@ -1269,6 +1284,9 @@ ApplicationWindow {
                             disagree: modelData.disagree
                             info: modelData.weight_pct.toFixed(0) + "%  σ"
                                   + modelData.sigma_m.toFixed(1)
+                                  + (modelData.age_s != null
+                                     ? "  " + modelData.age_s.toFixed(1)
+                                       + "с" : "")
                         }
                     }
                     Repeater {
@@ -1284,6 +1302,9 @@ ApplicationWindow {
                             used: modelData.used
                             info: (modelData.dev_deg >= 0 ? "+" : "")
                                   + modelData.dev_deg.toFixed(1) + "°"
+                                  + (modelData.age_s != null
+                                     ? "  " + modelData.age_s.toFixed(1)
+                                       + "с" : "")
                         }
                     }
                     KV {

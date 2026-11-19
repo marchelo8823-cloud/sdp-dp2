@@ -368,21 +368,32 @@ class SensorSuite:
         return used
 
     # --------------------------------------------------- телеметрия
-    def prs_detail(self):
+    def prs_detail(self, t=None):
         out = []
         for ch in self.prs:
             xy = ch.hist[-1][1] if ch.hist else None
+            age = (round(t - ch.hist[-1][0], 1)
+                   if t is not None and ch.hist else None)
             out.append({"name": ch.name, "state": ch.state,
                         "reason": ch.reason,
                         "weight_pct": round(100 * ch.weight, 1),
                         "sigma_m": round(ch.sigma, 2),
                         "disagree": ch.disagree,
+                        # возраст последнего измерения, с
+                        "age_s": age,
                         # последнее измерение (NED), для меток на плане
                         "xy": None if xy is None else [round(float(xy[0]), 2),
                                                        round(float(xy[1]), 2)]})
         return out
 
-    def gyro_detail(self):
-        return [{"name": ch.name, "state": ch.state, "reason": ch.reason,
-                 "used": ch.used, "disagree": ch.disagree,
-                 "dev_deg": round(ch.dev_deg, 2)} for ch in self.gyro]
+    def gyro_detail(self, t=None):
+        out = []
+        for ch in self.gyro:
+            age = (round(t - ch.hist[-1][0], 1)
+                   if t is not None and ch.hist else None)
+            out.append({"name": ch.name, "state": ch.state,
+                        "reason": ch.reason, "used": ch.used,
+                        "disagree": ch.disagree,
+                        "dev_deg": round(ch.dev_deg, 2),
+                        "age_s": age})
+        return out
