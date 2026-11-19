@@ -6,6 +6,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtMultimedia
 import Sdp 1.0
 
 ApplicationWindow {
@@ -49,6 +50,46 @@ ApplicationWindow {
     // доступ — удержание замка 2 с
     property bool instrLock: true
     property real lockProg: 0
+    // звуковая сигнализация: «тихо» отдельно от квитирования (MG 6.1.10);
+    // новая авария снова включает звук
+    property bool sndMuted: false
+    property int lastAlarmId: 0
+
+    SoundEffect {
+        id: warnSnd
+        source: "snd/warn.wav"
+        loops: SoundEffect.Infinite
+        volume: 0.5
+    }
+    SoundEffect {
+        id: alarmSnd
+        source: "snd/alarm.wav"
+        loops: SoundEffect.Infinite
+        volume: 0.7
+    }
+    function updateSound() {
+        var s = Telem.state;
+        if (s === undefined || s.t === undefined) {
+            if (warnSnd.playing) warnSnd.stop();
+            if (alarmSnd.playing) alarmSnd.stop();
+            return;
+        }
+        var maxId = 0;
+        if (s.alarms)
+            for (var ai = 0; ai < s.alarms.length; ai++)
+                if (!s.alarms[ai].acked && s.alarms[ai].id > maxId)
+                    maxId = s.alarms[ai].id;
+        if (maxId > root.lastAlarmId)
+            root.sndMuted = false;      // новая авария — звук снова
+        root.lastAlarmId = maxId;
+        var worst = s.alarm_worst || 0;
+        var needAlarm = !root.sndMuted && worst >= 2;
+        var needWarn = !root.sndMuted && worst === 1;
+        if (needAlarm && !alarmSnd.playing) alarmSnd.play();
+        if (!needAlarm && alarmSnd.playing) alarmSnd.stop();
+        if (needWarn && !warnSnd.playing) warnSnd.play();
+        if (!needWarn && warnSnd.playing) warnSnd.stop();
+    }
 
     readonly property var shipN: [38, 12, -30, -38, -38, -30, 12]
     readonly property var shipE: [0, 9, 9, 4, -4, -9, -9]
@@ -119,6 +160,7 @@ ApplicationWindow {
         target: Telem
         function onTick() {
             var s = Telem.state;
+            root.updateSound();
             if (s === undefined || s.t === undefined) return;
             if (s.t - root.lastTrailT > 1.0) {
                 if (root.lastTrailT >= 0 && s.t < root.lastTrailT)
@@ -494,6 +536,13 @@ ApplicationWindow {
                         horizontalAlignment: Text.AlignHCenter
                     }
                     onClicked: Telem.cmd({ "action": "ack" })
+                }
+                DpButton {
+                    // остановка звука — отдельно от квитирования (MG 6.1.10)
+                    text: root.sndMuted ? "🔇" : "🔔"
+                    active: !root.sndMuted && root.hasData()
+                            && Telem.state.alarm_worst >= 1
+                    onClicked: root.sndMuted = !root.sndMuted
                 }
                 DpButton {
                     text: "ACK"
