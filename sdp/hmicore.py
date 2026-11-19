@@ -116,6 +116,18 @@ class HMIState:
                 "limit_kn": lim,
                 "margin_kn": margin}
 
+    @staticmethod
+    def _prs_view(c):
+        """prs_detail + смещение измерения от заданной точки (для меток)."""
+        det = c.sensors.prs_detail()
+        for d in det:
+            if d["xy"] is not None:
+                d["dn"] = round(d["xy"][0] - float(c.eta_d[0]), 2)
+                d["de"] = round(d["xy"][1] - float(c.eta_d[1]), 2)
+            else:
+                d["dn"] = d["de"] = None
+        return det
+
     # --------------------------------------------------------- аварии
     def _raise(self, text, level):
         self._alarm_id += 1
@@ -321,7 +333,7 @@ class HMIState:
                               "moment_knm": round(float(mz) / 1e3, 1)},
                 "sensors": {"prs": [bool(f) for f in c.sensors.prs_failed],
                             "gyro": [bool(f) for f in c.sensors.gyro_failed],
-                            "prs_detail": c.sensors.prs_detail(),
+                            "prs_detail": self._prs_view(c),
                             "gyro_detail": c.sensors.gyro_detail()},
                 "conseq": {"level": c.conseq_level, "text": c.conseq_text},
                 "capability": self._cap_snapshot(c),

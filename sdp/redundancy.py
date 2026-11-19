@@ -369,10 +369,18 @@ class SensorSuite:
 
     # --------------------------------------------------- телеметрия
     def prs_detail(self):
-        return [{"name": ch.name, "state": ch.state, "reason": ch.reason,
-                 "weight_pct": round(100 * ch.weight, 1),
-                 "sigma_m": round(ch.sigma, 2),
-                 "disagree": ch.disagree} for ch in self.prs]
+        out = []
+        for ch in self.prs:
+            xy = ch.hist[-1][1] if ch.hist else None
+            out.append({"name": ch.name, "state": ch.state,
+                        "reason": ch.reason,
+                        "weight_pct": round(100 * ch.weight, 1),
+                        "sigma_m": round(ch.sigma, 2),
+                        "disagree": ch.disagree,
+                        # последнее измерение (NED), для меток на плане
+                        "xy": None if xy is None else [round(float(xy[0]), 2),
+                                                       round(float(xy[1]), 2)]})
+        return out
 
     def gyro_detail(self):
         return [{"name": ch.name, "state": ch.state, "reason": ch.reason,

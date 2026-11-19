@@ -661,6 +661,34 @@ ApplicationWindow {
                                 ctx.stroke();
                             }
                         }
+                        // метки опорных систем: где каждая PRS видит
+                        // судно относительно заданной точки (Refsys view)
+                        if (s.sensors && s.sensors.prs_detail) {
+                            ctx.font = Math.max(8, R / 26) + "px Menlo";
+                            ctx.textAlign = "left";
+                            for (var pi = 0; pi < s.sensors.prs_detail.length; pi++) {
+                                var pr = s.sensors.prs_detail[pi];
+                                if (pr.dn === null || pr.de === null) continue;
+                                if (pr.state === "failed" || pr.state === "deselected")
+                                    continue;
+                                var pdn = pr.dn / root.range * R;
+                                var pde = pr.de / root.range * R;
+                                if (Math.hypot(pdn, pde) > R * 1.05) continue;
+                                var px2 = cx + pde, py2 = cy - pdn;
+                                var pcol = pr.state !== "ok" ? root.red
+                                         : pr.disagree ? root.yellow
+                                         : root.green;
+                                ctx.beginPath();
+                                ctx.arc(px2, py2, 3.5, 0, 2 * Math.PI);
+                                ctx.fillStyle = pcol;
+                                ctx.fill();
+                                ctx.strokeStyle = root.pal.bg;
+                                ctx.lineWidth = 1;
+                                ctx.stroke();
+                                ctx.fillStyle = pcol;
+                                ctx.fillText("P" + (pi + 1), px2 + 6, py2 - 4);
+                            }
+                        }
                         // судно
                         ctx.save();
                         ctx.translate(cx + s.err_e / root.range * R,
