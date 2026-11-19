@@ -1,0 +1,9 @@
+build*/
+*.csv
+!tests/**/*.csv
+.DS_Store
+test-out/
+_base/
+вход/
+agent-out/
+agent-pr.md

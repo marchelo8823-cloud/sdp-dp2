@@ -1,0 +1,9 @@
+<RCC>
+  <qresource prefix="/">
+    <file>qml/qmldir</file>
+    <file>qml/Theme.qml</file>
+    <file>qml/Main.qml</file>
+    <file>qml/PositionView.qml</file>
+    <file>qml/ThrusterTile.qml</file>
+  </qresource>
+</RCC>

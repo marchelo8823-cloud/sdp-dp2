@@ -1,0 +1,15 @@
+# Точка сдвинута на 20 м назад (ускорение ×20): колонкам нужно развернуться почти на 180°.
+# Ожидается: «Колонки разворачиваются» (AZ_TURNING), без SATURATION — запрос в пределах возможностей.
+#! есть: ТРЕВОГА AZ_TURNING
+#! нет: SATURATION
+#! итог_положение < 25
+ship load data/Данные_судна_пример.xlsx
+sim start tests/scenarios/имитатор_быстро.xlsx
+wait 20
+thr_take all
+position
+wait 300
+move -20 0
+wait 200
+status
+wait 1

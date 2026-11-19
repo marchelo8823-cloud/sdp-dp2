@@ -1,0 +1,39 @@
+# Отказы в имитаторе (ускорение ×20).
+# Ожидается: при отказе BOW1 — тревога THR_FB_LOST_BOW1, удержание сохраняется; при потере GNSS1, GNSS2 и лазера — тревога POS_DROPOUT, режим не снимается;
+# после sim reset тревога снимается; standby переводит в ГОТОВ; sim stop — в ЖДУ ДАТЧИКИ.
+# После возврата систем положения судно возвращается в заданную точку плавно (не быстрее 0,2 м/с).
+# ⚠ Кратковременные HIGH_LOAD или SATURATION при торможении иногда бывают (1 прогон из 11 на Linux, на Mac — HIGH_LOAD):
+#   их разбор ждёт решения владельца, поэтому здесь не проверяются. Усилие при возврате проверяет core_test (меньше 80 % возможностей).
+# Критерии (проверяются в ctest, tests/run_scenario.cmake):
+#! есть: ТРЕВОГА THR_FB_LOST_BOW1
+#! есть: ТРЕВОГА POS_DROPOUT
+#! есть: Тревога снята: POS_DROPOUT
+#! есть: Положение восстановлено
+#! есть: Возврат в заданную точку завершён
+#! есть: Состояние ядра: ГОТОВ
+#! есть: Имитатор остановлен
+#! есть: Состояние ядра: ЖДУ ДАТЧИКИ
+ship load data/Данные_судна_пример.xlsx
+sim start tests/scenarios/имитатор_быстро.xlsx
+wait 20
+thr_take all
+position
+wait 300
+sim thr off BOW1
+wait 300
+status
+sim thr on BOW1
+sim off GNSS1
+sim off GNSS2
+sim off LASER
+wait 150
+status
+sim reset
+wait 200
+status
+standby
+wait 5
+sim stop
+wait 5
+status
+wait 1

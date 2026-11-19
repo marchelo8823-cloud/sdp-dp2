@@ -84,7 +84,7 @@ class DPConsole:
         # джойстик DP: полный ход ≈ 60–90 °/мин установившегося поворота)
         f_sum = sum(th.t_max for th in self.thrusters)
         m_sum = sum(th.t_max * max(abs(th.lx), 1.0) for th in self.thrusters)
-        self.joy_scale = np.array([0.6 * f_sum, 0.6 * f_sum, 0.08 * m_sum])
+        self.joy_scale = np.array([0.6 * f_sum, 0.6 * f_sum, 0.012 * m_sum])
         self.trail = []           # (N, E) для трассы на карте
         self.conseq_text = "…"
         self.conseq_level = 0     # 0 ok, 1 warn, 2 alarm
@@ -124,6 +124,7 @@ class DPConsole:
                                + self.observer._f(self.observer.x,
                                                   self.tau_cmd + dob_body) * DT)
             self.observer.last_dx[:] = 0.0
+            self.observer.clamp_bias()
 
         # FF = измеренный ветер + RBF (NED) + bias EKF
         self.ff = (ff_wind

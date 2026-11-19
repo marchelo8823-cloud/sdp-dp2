@@ -165,6 +165,7 @@ def run(hs=2.0, tp=7.0, wave_heading=45.0, wind_speed=10.0, wind_dir=30.0,
             observer.x = observer.x + observer._f(
                 observer.x, tau_cmd + dob_body) * dt
             observer.last_dx[:] = 0.0
+            observer.clamp_bias()
 
         # Feedforward: измеренный ветер + RBF-часть (NED) [+ bias из EKF]
         ff = ff_wind

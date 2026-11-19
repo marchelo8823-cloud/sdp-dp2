@@ -1,0 +1,106 @@
+# Агенты 3 (тестировщик) и 2 (координатор) проверяют предложение изменений.
+# Запуск: владелец открыл или обновил своё изменение, или владелец поставил метку «агент:проверка» (например, на изменение от агента).
+name: "Агенты: проверка изменения"
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+env:
+  MODEL: ${{ vars.SDP_AGENT_MODEL || 'claude-sonnet-5-5' }}
+jobs:
+  tester:
+    if: >-
+      github.actor == github.repository_owner &&
+      ((github.event.action != 'labeled' && github.event.pull_request.user.login == github.repository_owner) ||
+       (github.event.action == 'labeled' && github.event.label.name == 'агент:проверка'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Инструкции агентов из основной ветки
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: _base
+          sparse-checkout: |
+            CLAUDE.md
+            .github/agents
+          persist-credentials: false
+      - name: Зависимости
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ qt6-base-dev qt6-declarative-dev qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-window qml6-module-qtquick-templates qml6-module-qtqml-workerscript libgl1-mesa-dev libsecret-1-dev
+      - name: Сборка, тесты, сценарии
+        run: tools/ci_build.sh || true
+      - name: Тестировщик (агент 3)
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Ты — агент 3, тестировщик проекта СДП. Режим: проверка изменения.
+            Репозиторий: ${{ github.repository }}. Изменение (pull request) №${{ github.event.pull_request.number }}.
+            Прочитай и выполняй: _base/CLAUDE.md, _base/.github/agents/common.md, _base/.github/agents/03-тестировщик.md.
+            Результаты сборки и тестов — в test-out/. Запиши отчёт в test-out/отчёт_тестировщика.md и добавь его комментарием к изменению.
+          claude_args: |
+            --model ${{ env.MODEL }}
+            --max-turns 40
+            --allowedTools Read,Glob,Grep,Write(test-out/**),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(ctest:*),Bash(./build/sdp_run:*),Bash(git diff:*),Bash(git log:*)
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-out-${{ github.event.pull_request.number }}
+          path: test-out/
+          retention-days: 14
+
+  coordinator:
+    needs: tester
+    if: always() && needs.tester.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: _base
+          sparse-checkout: |
+            CLAUDE.md
+            .github/agents
+          persist-credentials: false
+      - uses: actions/download-artifact@v6
+        with:
+          name: test-out-${{ github.event.pull_request.number }}
+          path: test-out/
+        continue-on-error: true
+      - name: Координатор (агент 2)
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Ты — агент 2, координатор проекта СДП. Режим: проверка изменения.
+            Репозиторий: ${{ github.repository }}. Изменение (pull request) №${{ github.event.pull_request.number }}.
+            Прочитай и выполняй: _base/CLAUDE.md, _base/.github/agents/common.md, _base/.github/agents/02-координатор.md.
+            Отчёт тестировщика: test-out/отчёт_тестировщика.md (если его нет — тестировщик не отработал, отметь это). Итог сборки: test-out/итог.txt.
+          claude_args: |
+            --model ${{ env.MODEL }}
+            --max-turns 25
+            --allowedTools Read,Glob,Grep,Write(test-out/**),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*)

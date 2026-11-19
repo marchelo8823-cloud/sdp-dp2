@@ -1,0 +1,182 @@
+# Задачи агентам по меткам на задачах (issues). Метку должен поставить владелец.
+#   агент:координатор   — разобрать задачу, составить план и подзадачи
+#   агент:тестировщик   — прогнать сборку, тесты и сценарии на основной ветке, найти ошибки
+#   агент:администратор — инструменты установки и наладки на судне, доступ и защита (результат — предложение изменений)
+# Ручной запуск (Actions → «Агенты: задачи» → Run workflow) создаёт метки в репозитории.
+name: "Агенты: задачи"
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+env:
+  MODEL: ${{ vars.SDP_AGENT_MODEL || 'claude-sonnet-5-5' }}
+jobs:
+  labels:
+    if: github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Метки агентов
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh label create "агент:координатор"   --color 1F4E79 --description "Агент 2: разбор задачи и план" --force
+          gh label create "агент:тестировщик"   --color 2E7D32 --description "Агент 3: тесты и поиск ошибок" --force
+          gh label create "агент:администратор" --color 6A1B9A --description "Агент 6: установка, наладка, защита" --force
+          gh label create "агент:проверка"      --color F9A825 --description "Проверить изменение агентами 3 и 2" --force
+          gh label create "ошибка"              --color C62828 --description "Найдена ошибка" --force
+          gh label create "безопасность"        --color B71C1C --description "Подозрение на попытку обойти правила агентов" --force
+          gh label create "агент:данные"        --color 00695C --description "Агент 1: расшифровка записей и выгрузок СДП" --force
+          gh label create "агент:правила"       --color 4E342E --description "Агент 4: соответствие РС, ИМО, IMCA" --force
+          gh label create "агент:отображение"   --color 0277BD --description "Агент 5: что и как видит оператор" --force
+          gh label create "агент:операторы"     --color AD1457 --description "Агент 7: оценка удобства четырьмя операторами" --force
+          gh label create "соответствие"        --color 6D4C41 --description "Нарушение или новое требование правил" --force
+
+  coordinator:
+    if: github.event_name == 'issues' && github.actor == github.repository_owner && github.event.label.name == 'агент:координатор'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          path: _base
+          sparse-checkout: |
+            CLAUDE.md
+            .github/agents
+          persist-credentials: false
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Ты — агент 2, координатор проекта СДП. Режим: задача.
+            Репозиторий: ${{ github.repository }}. Задача (issue) №${{ github.event.issue.number }}, автор — владелец.
+            Прочитай и выполняй: _base/CLAUDE.md, _base/.github/agents/common.md, _base/.github/agents/02-координатор.md.
+          claude_args: |
+            --model ${{ env.MODEL }}
+            --max-turns 25
+            --allowedTools Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*)
+
+  tester:
+    if: github.event_name == 'issues' && github.actor == github.repository_owner && github.event.label.name == 'агент:тестировщик'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          path: _base
+          sparse-checkout: |
+            CLAUDE.md
+            .github/agents
+          persist-credentials: false
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ qt6-base-dev qt6-declarative-dev qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-window qml6-module-qtquick-templates qml6-module-qtqml-workerscript libgl1-mesa-dev libsecret-1-dev
+      - run: tools/ci_build.sh || true
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Ты — агент 3, тестировщик проекта СДП. Режим: задача (проверка основной ветки).
+            Репозиторий: ${{ github.repository }}. Задача (issue) №${{ github.event.issue.number }}, автор — владелец.
+            Прочитай и выполняй: _base/CLAUDE.md, _base/.github/agents/common.md, _base/.github/agents/03-тестировщик.md.
+            Результаты сборки и тестов — в test-out/.
+          claude_args: |
+            --model ${{ env.MODEL }}
+            --max-turns 40
+            --allowedTools Read,Glob,Grep,Write(test-out/**),Bash(gh issue view:*),Bash(gh issue create:*),Bash(gh issue comment:*),Bash(ctest:*),Bash(./build/sdp_run:*),Bash(git log:*)
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-out-issue-${{ github.event.issue.number }}
+          path: test-out/
+          retention-days: 14
+
+  admin:
+    if: github.event_name == 'issues' && github.actor == github.repository_owner && github.event.label.name == 'агент:администратор'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          path: _base
+          sparse-checkout: |
+            CLAUDE.md
+            .github/agents
+          persist-credentials: false
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ qt6-base-dev qt6-declarative-dev qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-window qml6-module-qtquick-templates qml6-module-qtqml-workerscript libgl1-mesa-dev libsecret-1-dev
+      - name: Git от имени агента
+        run: git config user.name "СДП агент 6" && git config user.email "agent6@users.noreply.github.com"
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Ты — агент 6, администратор проекта СДП. Режим: задача.
+            Репозиторий: ${{ github.repository }}. Задача (issue) №${{ github.event.issue.number }}, автор — владелец.
+            Прочитай и выполняй: _base/CLAUDE.md, _base/.github/agents/common.md, _base/.github/agents/06-администратор.md.
+            Ветка для работы: agent/admin-${{ github.event.issue.number }}. Проверка перед отправкой: tools/ci_build.sh.
+          claude_args: |
+            --model ${{ env.MODEL }}
+            --max-turns 60
+            --allowedTools Write(agent-pr.md),Read,Glob,Grep,Edit,Write,Bash(tools/ci_build.sh:*),Bash(cmake:*),Bash(ctest:*),Bash(./build/sdp_run:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git switch -c agent/admin-:*),Bash(git add:*),Bash(git commit:*),Bash(gh issue view:*),Bash(gh issue comment:*)
+      - name: Изменения агента → файл для отправки
+        if: always()
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: tools/agent_collect.sh "agent/admin-${{ github.event.issue.number }}"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: agent-out-admin-${{ github.run_id }}
+          path: agent-out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  admin-publish:
+    needs: admin
+    if: always() && needs.admin.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v6
+        with:
+          name: agent-out-admin-${{ github.run_id }}
+          path: agent-out
+        continue-on-error: true
+      - name: Проверка путей и отправка ветки агента
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/agent_publish.sh "agent/admin-" '^(tools/|docs/|отчёты/|data/|tests/|apps/|include/|shipedit/|SECURITY\.md$|README\.md$|ЗАПУСК\.md$|CMakeLists\.txt$|\.gitignore$)' "${{ github.event.issue.number }}"

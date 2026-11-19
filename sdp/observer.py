@@ -99,10 +99,26 @@ class DPObserver:
         self.x = self.x + K @ innov
         self.last_dx = K @ innov
         self.P = (np.eye(self.n) - K @ H) @ self.P
+        self.clamp_bias()
+
+    def clamp_bias(self, lim=(1.5e5, 1.5e5, 4.0e5)):
+        """Ограничение оценки смещения (anti-windup).
+
+        Bias — медленная составляющая силы среды (ветер+течение+ошибка
+        модели), для судна такого класса это десятки кН. Без насыщения
+        random-walk состояние b в долгих ручных манёврах уходит за
+        1e5 кН: consequence-анализ принимает его за чудовищную среду
+        и объявляет любой отказ непереносимым."""
+        lim = np.asarray(lim, float)
+        self.x[10:13] = np.clip(self.x[10:13], -lim, lim)
 
     @property
     def eta_hat(self):
         return self.x[4:7]
+
+    @property
+    def bias(self):
+        return self.x[10:13]
 
     @property
     def nu_hat(self):

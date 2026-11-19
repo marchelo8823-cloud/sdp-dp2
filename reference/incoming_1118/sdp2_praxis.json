@@ -1,0 +1,67 @@
+{
+  // Судно «СДП-2» с системой Praxis. Состав движителей, датчиков и параметры контуров взяты из выгрузки конфигурации Praxis
+  //   (Config.mdb и программы PAL1131 блоков XP51–XP58, версия кода 1.026). Номера движителей THR1…THR8 совпадают с тегами THRUSTER_OUT[1…8].
+  //
+  // ⚠⚠ ЗАГЛУШКИ. В выгрузке Praxis НЕТ: размеров и водоизмещения судна, площадей парусности, координат и упоров движителей,
+  //   мощностей генераторов и разбивки по шинам. Все такие числа ниже помечены «ЗАГЛУШКА» и подобраны только для того, чтобы файл загружался
+  //   и имитатор работал. Удержание, расчёт возможностей и нагрузка станции с ними НЕ соответствуют судну. Заменить данными судна.
+  //
+  // Взято из Praxis (не заглушки):
+  //   — состав: THR1, THR2 — главные винты ВРШ левый и правый с рулями; THR3, THR4 — носовые ПУ (нос и корма); THR5, THR6 — кормовые ПУ;
+  //     THR7, THR8 — движители с управлением по оборотам и контуром поворота (по настройке контроля угла — поворотные; ⚠ тип подтвердить);
+  //   — темп изменения шага 15 %/с (THR1–THR5); у THR6–THR8 ограничение в блоке отключено (0) — оставлено значение ядра по умолчанию;
+  //   — контроль расхождения «уставка ↔ факт»: THR1–2 — 25 % / 25 с; THR3–8 — 15 % / 15 с; по углу THR7–8 — 30°;
+  //   — мощность: верх шкалы датчика потребляемой мощности (800, 800, 460, 400, 460, —, 800, 800 кВт). ⚠ Это шкала датчика, а не паспортная мощность.
+  //
+  // Чего ядро не моделирует:
+  //   ⚠ рули THR1 и THR2 (±45°): главные винты заданы как неповоротные (fixed), сила только вдоль судна;
+  //   ⚠ четыре шины и десять секционных автоматов Praxis: в модели две шины (A, B) и один автомат.
+  "vessel": {
+    "name": "СДП-2 (Praxis) — корпус: заглушка",
+    "length": 80.0, "beam": 18.0, "draft": 5.0,     // ЗАГЛУШКА
+    "mass": 5000000,                                 // ЗАГЛУШКА
+    "gmT": 1.5, "gmL": 90,                           // ЗАГЛУШКА
+    "waterplaneCoef": 0.8,                           // ЗАГЛУШКА
+    "frontalArea": 250, "lateralArea": 700,          // ЗАГЛУШКА (в Praxis это теги VESSEL_DATA.HULL/STRUCTURE.WIND_AT, WIND_AL — значения читаются только с работающей системы)
+    "cx": 0.7, "cy": 0.9, "cn": 0.12,
+    "waveReflection": 0.3,
+    "lpp": 80.0                                      // ЗАГЛУШКА
+  },
+  "thrusters": [
+    // x, y, maxForward, maxReverse — ЗАГЛУШКИ (упор оценён как ~150 Н/кВт от верха шкалы датчика мощности). bus — ЗАГЛУШКА.
+    // THR1, THR2: главные ВРШ. Обратная связь Praxis по шагу −25…100 %, поэтому упор назад принят 25 % от упора вперёд (ЗАГЛУШКА).
+    { "id": "THR1", "bus": 0, "type": "fixed",   "fixedAngleDeg": 0, "x": -34.0, "y": -4.0, "maxForward": 120000, "maxReverse": 30000, "powerMaxKW": 800, "rateFracPerS": 0.15, "fbDiffPct": 25, "fbDiffDelayS": 25 },
+    { "id": "THR2", "bus": 1, "type": "fixed",   "fixedAngleDeg": 0, "x": -34.0, "y":  4.0, "maxForward": 120000, "maxReverse": 30000, "powerMaxKW": 800, "rateFracPerS": 0.15, "fbDiffPct": 25, "fbDiffDelayS": 25 },
+    // THR3 — носовое ПУ (BOW FWD), THR4 — носовое ПУ (BOW AFT)
+    { "id": "THR3", "bus": 0, "type": "tunnel",  "x":  32.0, "y": 0.0, "maxForward": 69000, "maxReverse": 69000, "powerMaxKW": 460, "rateFracPerS": 0.15, "fbDiffPct": 15, "fbDiffDelayS": 15 },
+    { "id": "THR4", "bus": 1, "type": "tunnel",  "x":  28.0, "y": 0.0, "maxForward": 60000, "maxReverse": 60000, "powerMaxKW": 400, "rateFracPerS": 0.15, "fbDiffPct": 15, "fbDiffDelayS": 15 },
+    // THR5 — кормовое ПУ (STERN), THR6 — кормовое ПУ (STERN AFT; датчика мощности в блоке нет, мощность принята как у THR5)
+    { "id": "THR5", "bus": 0, "type": "tunnel",  "x": -26.0, "y": 0.0, "maxForward": 69000, "maxReverse": 69000, "powerMaxKW": 460, "rateFracPerS": 0.15, "fbDiffPct": 15, "fbDiffDelayS": 15 },
+    { "id": "THR6", "bus": 1, "type": "tunnel",  "x": -30.0, "y": 0.0, "maxForward": 69000, "maxReverse": 69000, "powerMaxKW": 460, "fbDiffPct": 15, "fbDiffDelayS": 15 },
+    // THR7, THR8 — управление по оборотам, есть контур поворота. ⚠ Тип и место установки подтвердить.
+    { "id": "THR7", "bus": 0, "type": "azimuth", "x":  20.0, "y": -5.0, "maxForward": 120000, "maxReverse": 120000, "powerMaxKW": 800, "fbDiffPct": 15, "fbDiffAngleDeg": 30, "fbDiffDelayS": 15 },
+    { "id": "THR8", "bus": 1, "type": "azimuth", "x":  20.0, "y":  5.0, "maxForward": 120000, "maxReverse": 120000, "powerMaxKW": 800, "fbDiffPct": 15, "fbDiffAngleDeg": 30, "fbDiffDelayS": 15 }
+  ],
+  "plant": {
+    // В Praxis шесть дизель-генераторов (DG1…DG6), шкала датчика мощности 0…1000 кВт. Мощность и разбивка по шинам — ЗАГЛУШКИ.
+    "tieClosed": true, "minReservePct": 15, "serviceKW_A": 300, "serviceKW_B": 300,
+    "generators": [
+      { "id": "DG1", "ratedKW": 1000, "bus": "A" }, { "id": "DG2", "ratedKW": 1000, "bus": "A" }, { "id": "DG3", "ratedKW": 1000, "bus": "A" },
+      { "id": "DG4", "ratedKW": 1000, "bus": "B" }, { "id": "DG5", "ratedKW": 1000, "bus": "B" }, { "id": "DG6", "ratedKW": 1000, "bus": "B" }
+    ]
+  },
+  "origin": { "lat": 60.0, "lon": 29.5 },            // ЗАГЛУШКА: район работ
+  "estimator": { "medianTest": "reject", "medianFrac": 0.8, "softRateMS": 0.3, "softStartM": 1.0 },
+  "control": { "law": "pid", "posDeadM": 0.4, "hdgDeadDeg": 0.4, "predict": true, "predictMeanS": 40, "predictHorizonS": 15, "biasFilterS": 20 },
+  "sim": {
+    "enabled": true, "speed": 1, "initialHeadingDeg": 10,
+    "environment": { "windSpeed": 8, "windFromDeg": 60, "currentSpeed": 0.3, "currentToDeg": 200, "hs": 1.0, "tp": 7, "waveFromDeg": 60 }
+  },
+
+  // Датчики на судне по списку Praxis (для будущего модуля чтения OPC; сейчас работает имитатор):
+  //   гирокомпасы GYRO1…3 (теги GYRO_OUT[1…3]), ветер WIND1…3, датчики качки MRU1…3, GPS1…3,
+  //   лазерные системы LASER1…3, гидроакустика ACOUSTIC1…2, натянутый трос TAUTWIRE1.
+  // Модуля чтения классического OPC (DA) в ядре пока нет, поэтому раздел "inputs" не заполнен.
+
+  "app": { "cycleHz": 10, "statusPeriodS": 60, "startMode": "standby", "logFile": "sdp_log.csv" }
+}

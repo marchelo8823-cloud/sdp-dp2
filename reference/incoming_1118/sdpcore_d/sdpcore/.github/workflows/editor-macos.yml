@@ -1,0 +1,35 @@
+# Сборка и тесты на macOS (Apple Silicon) и сборка редактора («Связка ключей»). Только вручную: Actions → macOS → Run workflow.
+# ⚠ Минута macOS расходует 10 минут бесплатного лимита (закрытый репозиторий, тариф Free — 2000 минут в месяц); прогон ≈ 15 минут.
+name: macOS
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Qt
+        run: brew install qt
+      - name: Сборка
+        run: |
+          cmake -S . -B build -DSDP_BUILD_EDITOR=ON -DSDP_BUILD_HMI=ON -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+          cmake --build build -j3
+      - name: Тесты
+        run: |
+          set -o pipefail
+          ctest --test-dir build --output-on-failure --timeout 400 2>&1 | tee тесты_macos.txt
+      - name: Запуск без экрана
+        run: QT_QPA_PLATFORM=offscreen ./build/shipedit/sdp_ship "data/Данные_судна_пример.xlsx" --tab 0 --screenshot снимок_macos.png
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: macos
+          path: |
+            снимок_macos.png
+            тесты_macos.txt
+          retention-days: 7
