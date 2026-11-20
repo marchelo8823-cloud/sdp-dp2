@@ -249,6 +249,12 @@ class DPConsole:
                 bad.append(name)
             if util > worst_u:
                 worst_u, worst_name = util, name
+        # электростанция: переносим ли отказ худшего ДГ по мощности
+        gen_def = self.plant.gen_failure_check(
+            margin=self.consequence.margin)
+        if gen_def:
+            worst_gen = max(gen_def.items(), key=lambda kv: kv[1])
+            bad.append(f"{worst_gen[0]} (−{worst_gen[1]:.0f} кВт)")
         if bad:
             self.conseq_text = ("ALARM: отказ "
                                 + ",".join(bad) + " не переносим")

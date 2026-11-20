@@ -1349,7 +1349,9 @@ ApplicationWindow {
                                 spacing: 6
                                 Text {
                                     text: "Шина " + bus.name
-                                    color: bus.dead ? root.red : root.pal.txt
+                                    color: bus.dead ? root.red
+                                         : bus.overload_s > 0 ? root.orange
+                                         : root.pal.txt
                                     font.pixelSize: 11; font.bold: true
                                 }
                                 Rectangle {
@@ -1374,7 +1376,13 @@ ApplicationWindow {
                                 Text {
                                     text: bus.load_kw.toFixed(0) + " / "
                                           + bus.avail_kw.toFixed(0) + " кВт"
-                                    color: root.pal.dim; font.pixelSize: 10
+                                          + (bus.overload_s > 0
+                                             ? "  ⚠ откл. через "
+                                               + Math.max(0, 5 - bus.overload_s).toFixed(0) + " с"
+                                             : "")
+                                    color: bus.overload_s > 0 ? root.orange
+                                                               : root.pal.dim
+                                    font.pixelSize: 10
                                 }
                             }
                             RowLayout {

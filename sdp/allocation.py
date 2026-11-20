@@ -100,6 +100,8 @@ class AzimuthThruster:
         # PMS: допустимая по мощности тяга (режет электростанция,
         # по умолчанию — полный упор)
         self.u_avail = t_max
+        # запрос тяги ДО PMS-ограничения (для защиты по перегрузке)
+        self.u_request = 0.0
         self.az_rate = np.deg2rad(az_rate_deg_s)
         self.forbidden_zones = [tuple(np.deg2rad(z)) for z in forbidden_zones]
         self.tunnel = tunnel
@@ -257,6 +259,7 @@ class AzimuthAllocator:
         alpha_new = wrap_pi(th.alpha + da)
         # Тяга с учётом фактического угла (проекция запрошенной силы);
         # ограничение по мощности (PMS) — на уровне команды приводу
+        th.u_request = u_des
         u_new = np.clip(u_des, max(th.t_min, -th.u_avail),
                         min(th.t_max, th.u_avail))
         return u_new, alpha_new
@@ -326,6 +329,7 @@ class AzimuthAllocator:
                 th.step_drive(0.0, th.alpha, dt)
                 continue
             _, alpha_cmd = self._apply_azimuth_limits(th, f2d[i], dt)
+            th.u_request = float(u_cmd[i])   # запрос до PMS-ограничения
             th.step_drive(np.clip(u_cmd[i],
                                   max(th.t_min, -th.u_avail),
                                   min(th.t_max, th.u_avail)),

@@ -222,6 +222,13 @@ class HMIState:
          "секционном автомате её движители питаются от соседней шины, "
          "при разомкнутом — встают. → Определить причину (КЗ, автомат), "
          "замкнуть перемычку, запустить ДГ исправной секции."),
+        ("блэкаут",
+         "Выключатели сети разомкнулись по перегрузке: запрос мощности "
+         "долго превышал 110 % доступной — защита сработала несмотря на "
+         "ограничение тяги. КАСКАД: нагрузка перетекла на соседнюю сеть "
+         "и может снять и её. → Снизить запрос (снять упор/уменьшить "
+         "ход), вернуть шины кнопками пульта инструктора, запустить "
+         "резервные ДГ."),
         ("резерв мощности",
          "Spinning reserve ниже нормы: следующий отказ ДГ приведёт к "
          "ограничению тяги. → Запустить резервный генератор."),
@@ -396,6 +403,7 @@ class HMIState:
         cur = {
             "bus_a": p.bus_dead["A"], "bus_b": p.bus_dead["B"],
             "limit": any(p.limit_mask),
+            "overload": dict(p.overload_s),
             "reserve_low": 0.0 < p.reserve_pct < p.min_reserve_pct,
             "gens": tuple(g.failed for g in p.gens),
         }
@@ -403,10 +411,21 @@ class HMIState:
         if old is not None:
             for key, name in (("bus_a", "A"), ("bus_b", "B")):
                 if cur[key] and not old[key]:
-                    self._raise(f"PMS: ОТКАЗ ШИНЫ {name} — секция "
-                                "обесточена", 2)
+                    cause = p.trip_cause.get(name)
+                    if cause == "overload":
+                        self._raise(f"PMS: БЛЭКАУТ шины {name} — защита "
+                                    "по перегрузке (110 %), смотри "
+                                    "соседнюю сеть", 2)
+                    else:
+                        self._raise(f"PMS: ОТКАЗ ШИНЫ {name} — секция "
+                                    "обесточена", 2)
                 elif not cur[key] and old[key]:
                     self._raise(f"PMS: шина {name} восстановлена", 0)
+            for net, t_acc in p.overload_s.items():
+                if t_acc > 0.0 and not old["overload"].get(net, 0.0) > 0.0:
+                    self._raise("PMS: ПЕРЕГРУЗКА сети "
+                                f"{net} — до отключения "
+                                f"{max(0.0, 5.0 - t_acc):.0f} с", 1)
             if cur["limit"] and not old["limit"]:
                 self._raise("PMS: ограничение тяги — запрос мощности "
                             "превышает доступную", 1)

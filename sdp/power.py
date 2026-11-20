@@ -17,6 +17,8 @@
 
 GEN_START_S = 30.0       # запуск ДГ до приёма нагрузки
 RESERVE_MIN_PCT = 15.0   # минимальный spinning reserve (предупреждение)
+OVERLOAD_RATIO = 1.10    # защита шины: запрос выше 110 % доступного
+OVERLOAD_TRIP_S = 5.0    # …в течение 5 с → выключатель шины (блэкаут)
 
 
 class Generator:
@@ -88,6 +90,10 @@ class PowerPlant:
             self.bus_of = ["A", "B", "A", "B"]
         self.tie_closed = True
         self.bus_dead = {"A": False, "B": False}
+        # защита по перегрузке: накопленное время перегруза по сети,
+        # причина отключения (для журнала аварий)
+        self.overload_s = {}
+        self.trip_cause = {"A": None, "B": None}   # None | "overload" | "manual"
         self.min_reserve_pct = RESERVE_MIN_PCT
         self.limit_mask = [False] * len(thrusters)   # PMS reduce активен
         self.load_kw = 0.0
@@ -106,14 +112,23 @@ class PowerPlant:
         return {"A": (["A"], ["A"]), "B": (["B"], ["B"])}
 
     def step(self, dt):
-        """Пересчёт допустимой тяги th.u_avail по балансу мощности."""
+        """Пересчёт допустимой тяги th.u_avail по балансу мощности.
+
+        Два механизма защиты, как в судовой PMS:
+          1. PMS reduce — запрос выше бюджета → пропорциональное
+             ограничение тяги движителей сети;
+          2. защита по перегрузке — если ЗАПРОШЕННАЯ мощность (по
+             командам приводов) держится выше 110 % доступной
+             OVERLOAD_TRIP_S секунд, выключатели сети размыкаются —
+             блэкаут. При замкнутой перемычке нагрузка мёртвой сети
+             перетекает на соседнюю — отсюда каскадный блэкаут.
+        """
         for g in self.gens:
             g.step(dt)
         nets = self._networks()
         self.load_kw = 0.0
         self.avail_kw = 0.0
         self.limit_mask = [False] * len(self.thrusters)
-        # u_avail по умолчанию — полный упор; дальше режем
         for net, (src_buses, load_buses) in nets.items():
             avail = sum(g.avail_kw for g in self.gens
                         if g.bus in src_buses
@@ -122,7 +137,8 @@ class PowerPlant:
             budget = max(0.0, avail - service)
             idx = [i for i, b in enumerate(self.bus_of)
                    if b in load_buses]
-            demand = 0.0
+            demand = 0.0        # фактическая (после ограничения)
+            requested = 0.0     # запрошенная (по командам приводов)
             dem = {}
             for i in idx:
                 th = self.thrusters[i]
@@ -132,8 +148,24 @@ class PowerPlant:
                 p = self.p_max_kw[i] * (abs(th.u) / th.t_max) ** 2
                 dem[i] = p
                 demand += p
+                requested += (self.p_max_kw[i]
+                              * (abs(getattr(th, "u_request", th.u_cmd))
+                                 / th.t_max) ** 2)
             self.load_kw += demand + service
             self.avail_kw += avail
+            # --- защита по перегрузке (по запрошенной мощности)
+            if avail > 0.0 and requested + service > OVERLOAD_RATIO * avail:
+                t_acc = self.overload_s.get(net, 0.0) + dt
+                if t_acc >= OVERLOAD_TRIP_S:
+                    for b in load_buses:
+                        if not self.bus_dead[b]:
+                            self.bus_dead[b] = True
+                            self.trip_cause[b] = "overload"
+                    t_acc = 0.0
+                self.overload_s[net] = t_acc
+            else:
+                self.overload_s[net] = 0.0
+            # --- PMS reduce
             for i in idx:
                 th = self.thrusters[i]
                 if avail <= 0.0:
@@ -158,9 +190,42 @@ class PowerPlant:
 
     def fail_bus(self, name):
         self.bus_dead[name] = True
+        self.trip_cause[name] = "manual"
 
     def recover_bus(self, name):
         self.bus_dead[name] = False
+        self.trip_cause[name] = None
+        self.overload_s.clear()
+
+    def gen_failure_check(self, margin=0.1):
+        """CA по станции: дефицит мощности после отказа каждого ДГ.
+
+        Считает запрос по ФАКТИЧЕСКОЙ тяге движителей с запасом margin
+        и проверяет сеть каждого генератора без него. Возвращает
+        {имя ДГ: дефицит, кВт} — только для ДГ, чей отказ критичен.
+        """
+        out = {}
+        nets = self._networks()
+        for gen in self.gens:
+            if gen.failed or not gen.online:
+                continue
+            for net, (src, loads) in nets.items():
+                if gen.bus not in src:
+                    continue
+                avail = sum(g.avail_kw for g in self.gens
+                            if g.bus in src and not self.bus_dead[g.bus]
+                            and g is not gen)
+                service = sum(self.service_kw[b] for b in loads)
+                demand = sum(
+                    self.p_max_kw[i]
+                    * (abs(self.thrusters[i].u)
+                       / self.thrusters[i].t_max) ** 2
+                    for i, b in enumerate(self.bus_of) if b in loads
+                    and not self.thrusters[i].failed)
+                deficit = (demand * (1.0 + margin) + service) - avail
+                if deficit > 0.0:
+                    out[gen.name] = max(out.get(gen.name, 0.0), deficit)
+        return out
 
     def failure_groups(self):
         """Группы движителей, выбывающие одним отказом (для CA).
@@ -196,7 +261,11 @@ class PowerPlant:
             buses.append({"name": name,
                           "load_kw": round(load + self.service_kw[name], 0),
                           "avail_kw": round(avail, 0),
-                          "dead": self.bus_dead[name]})
+                          "dead": self.bus_dead[name],
+                          "overload_s": round(
+                              max((v for k, v in self.overload_s.items()
+                                   if name in k), default=0.0), 1),
+                          "trip_cause": self.trip_cause[name]})
         return {"gens": [g.snapshot() for g in self.gens],
                 "buses": buses,
                 "tie_closed": self.tie_closed,
