@@ -52,7 +52,8 @@ PRAX_NAMES = (
      "MRU1_ROLL_x10", "MRU1_PITCH_x10"]
     + [f"T{n}_{sig}" for n in range(1, 9) for sig in
        ("RPM_SP_x10", "RPM_FB_x10", "ANGLE_SP_x10", "ANGLE_FB_x10")]
-    + ["ALARM", "THR_FAIL_MASK", "GPS_SEL"]
+    + ["ALARM", "THR_FAIL_MASK", "GPS_SEL",
+       "PLANT_LOAD_KW", "PLANT_AVAIL_KW", "PMS_REDUCE_MASK"]
 )
 PRAX_SIGNED = {2, 3, 4} | {16 + n * 4 + i for n in range(8) for i in (0, 1)}
 
@@ -148,7 +149,15 @@ class ModbusTcpServer:
                 vals += [u, u, a, a]          # SP=FB (привод идеальный)
             else:
                 vals += [0, 0, 0, 0]
-        vals += [s.get("alarm_worst", 0), mask, 0]  # GPS_SEL — 1..3, 0=авто
+        plant = s.get("plant", {})
+        rmask = 0
+        for i, lim in enumerate(plant.get("limit_mask", [])):
+            if lim:
+                rmask |= 1 << i
+        vals += [s.get("alarm_worst", 0), mask, 0,  # GPS_SEL — 1..3, 0=авто
+                 plant.get("load_kw", 0),
+                 plant.get("avail_kw", 0),
+                 rmask]
         return [_pi16(a, v) for a, v in enumerate(vals)]
 
     # ------------------------------------------------------- протокол

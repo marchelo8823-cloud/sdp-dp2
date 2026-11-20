@@ -49,6 +49,7 @@ class HMIState:
         self._released = False
         self._sen_prev = None        # снимок состояний датчиков (фронты)
         self._prs_dis_prev = False   # фронт аварии «расхождение PRS»
+        self._plant_prev = None      # снимок PMS (фронты аварий станции)
         # --- онлайн-диаграмма возможностей (K-Pos №10): фоновый пересчёт
         self._cap = {"betas": [], "intact": [], "worst": []}
         self._cap_key = None
@@ -211,6 +212,19 @@ class HMIState:
         ("Упор восстановлен",
          "Команды движителям восстановлены, автоматика снова держит "
          "судно. Информационное сообщение."),
+        ("PMS: ограничение тяги",
+         "Запрос мощности превышает доступную: электростанция "
+         "пропорционально снижает тягу движителей (как Tn_RPM_PMS_REDUCE "
+         "в Praxis), точность удержания падает. → Запустить резервный "
+         "ДГ, вернуть отказавший, снизить нагрузку (курс к среде)."),
+        ("ОТКАЗ ШИНЫ",
+         "Секция распределительного устройства обесточена. При замкнутом "
+         "секционном автомате её движители питаются от соседней шины, "
+         "при разомкнутом — встают. → Определить причину (КЗ, автомат), "
+         "замкнуть перемычку, запустить ДГ исправной секции."),
+        ("резерв мощности",
+         "Spinning reserve ниже нормы: следующий отказ ДГ приведёт к "
+         "ограничению тяги. → Запустить резервный генератор."),
     )
 
     def _raise(self, text, level):
@@ -250,6 +264,7 @@ class HMIState:
                 self._watch_limits()
                 self._watch_degradation()
                 self._watch_sensors()
+                self._watch_plant()
                 # voyage recorder: телеметрия 1 Гц
                 if self.con.t - self._last_rec_t >= 1.0:
                     self.recorder.log_row(self._rec_row(self.con))
@@ -294,6 +309,8 @@ class HMIState:
             "az4": round(float(np.rad2deg(c.thrusters[3].alpha)), 0),
             "failed_mask": "".join(
                 "1" if t.failed else "0" for t in c.thrusters),
+            "plant_load_kw": round(c.plant.load_kw, 0),
+            "plant_avail_kw": round(c.plant.avail_kw, 0),
             "mode": c.mode,
             "conseq_level": c.conseq_level,
         }
@@ -371,6 +388,38 @@ class HMIState:
                         f"> {DEV_LIM:.1f} м — проверьте и снимите "
                         "неисправную", 1)
         self._prs_dis_prev = dis
+
+    def _watch_plant(self):
+        """Фронтовые аварии электростанции: отказ шины, ограничение
+        тяги (PMS reduce), потеря резерва мощности, отказы ДГ."""
+        p = self.con.plant
+        cur = {
+            "bus_a": p.bus_dead["A"], "bus_b": p.bus_dead["B"],
+            "limit": any(p.limit_mask),
+            "reserve_low": 0.0 < p.reserve_pct < p.min_reserve_pct,
+            "gens": tuple(g.failed for g in p.gens),
+        }
+        old = self._plant_prev
+        if old is not None:
+            for key, name in (("bus_a", "A"), ("bus_b", "B")):
+                if cur[key] and not old[key]:
+                    self._raise(f"PMS: ОТКАЗ ШИНЫ {name} — секция "
+                                "обесточена", 2)
+                elif not cur[key] and old[key]:
+                    self._raise(f"PMS: шина {name} восстановлена", 0)
+            if cur["limit"] and not old["limit"]:
+                self._raise("PMS: ограничение тяги — запрос мощности "
+                            "превышает доступную", 1)
+            if cur["reserve_low"] and not old["reserve_low"]:
+                self._raise(f"PMS: резерв мощности ниже "
+                            f"{p.min_reserve_pct:.0f} % — запустите "
+                            "резервный ДГ", 1)
+            for i, (f_new, f_old) in enumerate(zip(cur["gens"],
+                                                   old["gens"])):
+                if f_new and not f_old:
+                    self._raise(f"PMS: отказ {p.gens[i].name} "
+                                f"(шина {p.gens[i].bus})", 1)
+        self._plant_prev = cur
 
     def degradation(self):
         """Снимок деградационного состояния для HMI."""
@@ -480,6 +529,7 @@ class HMIState:
                             "prs_detail": self._prs_view(c),
                             "gyro_detail": c.sensors.gyro_detail(t=c.t)},
                 "conseq": {"level": c.conseq_level, "text": c.conseq_text},
+                "plant": c.plant.snapshot(),
                 # состав контура и состояние анализа последствий —
                 # замечание операторов «режим регулятора не виден»
                 "ctrl": {"law": "PID + DOB", "est": "EKF",
@@ -558,6 +608,12 @@ class HMIState:
                     self.con.inject(kind, idx)
                 if kind == "thruster":
                     self._raise(f"ИНСТРУКТОР: отказ ДРУ {idx + 1}", 1)
+                elif kind == "gen":
+                    self._raise(f"ИНСТРУКТОР: отказ "
+                                f"{self.con.plant.gens[idx].name}", 1)
+                elif kind == "bus":
+                    self._raise(f"ИНСТРУКТОР: отказ шины "
+                                f"{('A', 'B')[idx]}", 1)
                 elif ftype != "fail":
                     self._raise(f"ИНСТРУКТОР: сбой «{ftype}» "
                                 f"{'PRS' if kind == 'prs' else 'ГИРО'} "
@@ -569,6 +625,12 @@ class HMIState:
                 if kind == "thruster":
                     self.con.thrusters[idx].failed = False
                     name = f"ДРУ {idx + 1}"
+                elif kind == "gen":
+                    self.con.plant.recover_gen(idx)
+                    name = self.con.plant.gens[idx].name
+                elif kind == "bus":
+                    self.con.plant.recover_bus(("A", "B")[idx])
+                    name = f"Шина {('A', 'B')[idx]}"
                 elif kind == "prs":
                     self.con.sensors.recover_prs(idx)
                     name = f"PRS {idx + 1}"
@@ -576,6 +638,12 @@ class HMIState:
                     self.con.sensors.recover_gyro(idx)
                     name = f"ГИРО {idx + 1}"
                 self._raise(f"ИНСТРУКТОР: {name} возвращён в работу", 0)
+            elif act == "tie":
+                # секционный автомат: замкнуть/разомкнуть
+                closed = bool(cmd.get("closed", True))
+                self.con.plant.tie_closed = closed
+                self._raise("ОПЕРАТОР: секционный автомат "
+                            + ("замкнут" if closed else "разомкнут"), 0)
             elif act == "sensor_deselect":
                 # оператор снимает/возвращает систему (как в K-Pos Refsys)
                 kind, idx = cmd["kind"], int(cmd["idx"])
@@ -619,6 +687,7 @@ class HMIState:
                 self._released = False
                 self._sen_prev = None
                 self._prs_dis_prev = False
+                self._plant_prev = None
                 self._raise("Сброс симуляции", 0)
             elif act == "limits":
                 self.warn_pos = float(cmd["warn"])

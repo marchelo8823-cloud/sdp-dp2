@@ -27,6 +27,7 @@ from sdp.controller import PIDController
 from sdp.allocation import AzimuthAllocator
 from sdp.redundancy import SensorSuite
 from sdp.consequence import ConsequenceAnalyzer
+from sdp.power import PowerPlant
 from sdp.simcore import default_thrusters
 
 DT = 0.1
@@ -69,6 +70,8 @@ class DPConsole:
             self.thrusters = build_thrusters(self.profile)
         self.allocator = AzimuthAllocator(self.thrusters)
         self.consequence = ConsequenceAnalyzer(self.thrusters)
+        self.plant = PowerPlant(self.profile, self.thrusters)
+        self.plant.step(DT)          # начальный баланс мощности
         self.sensors = SensorSuite(seed=self.seed + 1)
         self.rng_anem = np.random.default_rng(self.seed + 7)
         self.V_m, self.g_m = self.wind.V, self.wind.gamma
@@ -162,6 +165,7 @@ class DPConsole:
         u, alpha, tau_alloc = self.allocator.allocate(self.tau_cmd, DT)
         self.eta, self.nu = self.vessel.step(self.eta, self.nu,
                                              tau_alloc, tau_env, DT)
+        self.plant.step(DT)          # баланс мощности → u_avail на след. шаг
         self.t += DT
         self.trail.append((self.eta[0], self.eta[1]))
         if len(self.trail) > 3000:
@@ -201,6 +205,15 @@ class DPConsole:
         if kind == "thruster" and not self.thrusters[idx].failed:
             self.thrusters[idx].failed = True
             self.alarms.append(f"t={self.t:6.1f}  ОТКАЗ ДРУ {idx + 1}")
+        elif kind == "gen" and not self.plant.gens[idx].failed:
+            self.plant.fail_gen(idx)
+            self.alarms.append(
+                f"t={self.t:6.1f}  ОТКАЗ {self.plant.gens[idx].name}")
+        elif kind == "bus":
+            name = ("A", "B")[idx]
+            if not self.plant.bus_dead[name]:
+                self.plant.fail_bus(name)
+                self.alarms.append(f"t={self.t:6.1f}  ОТКАЗ ШИНЫ {name}")
         elif kind == "prs" and not self.sensors.prs_failed[idx]:
             self.sensors.fail_prs(idx)
             self.alarms.append(f"t={self.t:6.1f}  ОТКАЗ PRS {idx + 1}")
@@ -210,22 +223,43 @@ class DPConsole:
         self.alarms = self.alarms[-4:]
 
     def update_consequence(self):
-        """Раз в ~5 с: переносим ли ещё один единичный отказ."""
+        """Раз в ~5 с: переносим ли ещё один единичный отказ.
+
+        Сценарии: отказ каждого оставшегося движителя + групповые
+        отказы по питанию (при разомкнутой перемычке отказ шины
+        снимает все её движители — критичный случай DP-2).
+        """
         tau_load = Vessel3DOF.R(self.observer.eta_hat[2]).T @ self.ff
         res = self.consequence.check(tau_load)
         worst = max(res.items(), key=lambda kv: kv[1][1])
-        bad = [j + 1 for j, (ok, _) in res.items() if not ok]
+        bad = [f"ДРУ{j + 1}" for j, (ok, _) in res.items() if not ok]
+        worst_u = worst[1][1]
+        worst_name = f"ДРУ {worst[0] + 1}"
+        # групповые отказы электростанции (шина при разомкнутой перемычке)
+        tau = np.asarray(tau_load, float) * (1.0 + self.consequence.margin)
+        for gi, grp in enumerate(self.plant.failure_groups()):
+            active = [i for i, th in enumerate(self.thrusters)
+                      if not th.failed and i not in grp]
+            alloc = AzimuthAllocator(self.thrusters)
+            ok, f = ConsequenceAnalyzer._feasible(alloc, tau, active)
+            util = max((np.hypot(*f[i]) / self.thrusters[i].t_max
+                        for i in active), default=1.0)
+            name = "шина " + ("A", "B")[gi]
+            if not ok:
+                bad.append(name)
+            if util > worst_u:
+                worst_u, worst_name = util, name
         if bad:
-            self.conseq_text = ("ALARM: отказ ДРУ "
-                                + ",".join(map(str, bad)) + " не переносим")
+            self.conseq_text = ("ALARM: отказ "
+                                + ",".join(bad) + " не переносим")
             self.conseq_level = 2
-        elif worst[1][1] > 0.9:
-            self.conseq_text = (f"ВНИМАНИЕ: после отказа ДРУ {worst[0] + 1} "
-                                f"загрузка {worst[1][1]:.0%}")
+        elif worst_u > 0.9:
+            self.conseq_text = (f"ВНИМАНИЕ: после отказа {worst_name} "
+                                f"загрузка {worst_u:.0%}")
             self.conseq_level = 1
         else:
             self.conseq_text = ("DP-2 ГОТОВ: ещё один отказ переносим "
-                                f"(макс {worst[1][1]:.0%})")
+                                f"(макс {worst_u:.0%})")
             self.conseq_level = 0
 
     @property

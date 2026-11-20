@@ -1312,8 +1312,7 @@ ApplicationWindow {
                                        + "с" : "")
                         }
                     }
-                    KV {
-                        k: "Отклонение позиции"
+                    KV { k: "Отклонение позиции"
                         v: root.hasData() ? Telem.state.pos_err.toFixed(2) + " м" : "—"
                         vColor: !root.hasData() ? root.pal.txt
                               : Telem.state.pos_err > Telem.state.alarm_pos ? root.red
@@ -1322,6 +1321,120 @@ ApplicationWindow {
                     }
                     KV { k: "N / E"; v: root.hasData() ? Telem.state.err_n.toFixed(2) + " / " + Telem.state.err_e.toFixed(2) + " м" : "—" }
                     KV { k: "Bias (LF смещение)"; v: root.hasData() ? Telem.state.bias_kn.toFixed(1) + " kN" : "—" }
+                }
+            }
+
+            // ===== электростанция (PMS)
+            DpPanel {
+                title: "Электростанция (PMS)"
+                rightTitle: root.hasData() && Telem.state.plant
+                    ? (Telem.state.plant.tie_closed ? "СА замкнут"
+                                                    : "СА РАЗОМКНУТ")
+                    : ""
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredHeight: 1.6
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 3
+                    Repeater {
+                        model: root.hasData() && Telem.state.plant
+                               ? Telem.state.plant.buses : []
+                        delegate: ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+                            property var bus: modelData
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Text {
+                                    text: "Шина " + bus.name
+                                    color: bus.dead ? root.red : root.pal.txt
+                                    font.pixelSize: 11; font.bold: true
+                                }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 10
+                                    color: root.pal.panel2
+                                    border.color: root.pal.line
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        width: bus.avail_kw > 0
+                                            ? parent.width * Math.min(
+                                                bus.load_kw / bus.avail_kw, 1)
+                                            : (bus.load_kw > 0
+                                               ? parent.width : 0)
+                                        color: bus.dead ? root.red
+                                            : bus.load_kw > 0.85 * bus.avail_kw
+                                              ? root.orange : root.green
+                                    }
+                                }
+                                Text {
+                                    text: bus.load_kw.toFixed(0) + " / "
+                                          + bus.avail_kw.toFixed(0) + " кВт"
+                                    color: root.pal.dim; font.pixelSize: 10
+                                }
+                            }
+                            RowLayout {
+                                spacing: 4
+                                Repeater {
+                                    model: root.hasData()
+                                           && Telem.state.plant
+                                           ? Telem.state.plant.gens : []
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        visible: modelData.bus === bus.name
+                                        implicitWidth: 40; implicitHeight: 15
+                                        radius: 2
+                                        color: modelData.state === "online"
+                                               ? root.green
+                                          : modelData.state === "starting"
+                                            ? root.yellow
+                                          : modelData.state === "failed"
+                                            ? root.red : root.pal.panel2
+                                        border.color: root.pal.line
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: modelData.state === "starting"
+                                                ? modelData.name + "…"
+                                                : modelData.name
+                                            color: modelData.state === "stopped"
+                                                   ? root.pal.dim : "#101418"
+                                            font.pixelSize: 9; font.bold: true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    KV { k: "Нагрузка / доступно"
+                         v: root.hasData() && Telem.state.plant
+                            ? Telem.state.plant.load_kw.toFixed(0) + " / "
+                              + Telem.state.plant.avail_kw.toFixed(0) + " кВт"
+                            : "—" }
+                    KV {
+                        k: "Резерв мощности"
+                        v: root.hasData() && Telem.state.plant
+                           ? Telem.state.plant.reserve_pct.toFixed(0) + " %"
+                           : "—"
+                        vColor: !root.hasData() || !Telem.state.plant
+                                ? root.pal.txt
+                              : Telem.state.plant.reserve_pct < 15 ? root.red
+                              : Telem.state.plant.reserve_pct < 25
+                                ? root.yellow : root.green
+                    }
+                    KV {
+                        k: "Ограничение тяги"
+                        v: root.hasData() && Telem.state.plant
+                           && Telem.state.plant.limit_mask.some(
+                               function(x) { return x; }) ? "АКТИВНО" : "нет"
+                        vColor: root.hasData() && Telem.state.plant
+                                && Telem.state.plant.limit_mask.some(
+                                    function(x) { return x; })
+                                ? root.orange : root.green
+                    }
                 }
             }
             }
@@ -1510,6 +1623,42 @@ ApplicationWindow {
                             property bool f: root.hasData() && Telem.state.sensors.gyro[0]
                             text: f ? "ГИРО1↩" : "ГИРО1"; accent: true
                             onClicked: Telem.cmd(f ? { "action": "recover", "kind": "gyro", "idx": 0 } : { "action": "fail", "kind": "gyro", "idx": 0 })
+                        }
+                    }
+                    // электростанция: отказы ДГ, шин, секционный автомат
+                    RowLayout {
+                        spacing: 4
+                        Repeater {
+                            model: root.hasData() && Telem.state.plant
+                                   ? Telem.state.plant.gens.length : 0
+                            DpButton {
+                                required property int index
+                                property bool f: root.hasData()
+                                    && Telem.state.plant
+                                    && Telem.state.plant.gens[index].state === "failed"
+                                text: (f ? "ДГ" + (index + 1) + "↩"
+                                         : "ДГ" + (index + 1))
+                                accent: true
+                                onClicked: Telem.cmd(f ? { "action": "recover", "kind": "gen", "idx": index } : { "action": "fail", "kind": "gen", "idx": index })
+                            }
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.plant
+                                && Telem.state.plant.buses[0].dead
+                            text: f ? "ШинаА↩" : "ШинаА"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "bus", "idx": 0 } : { "action": "fail", "kind": "bus", "idx": 0 })
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.plant
+                                && Telem.state.plant.buses[1].dead
+                            text: f ? "ШинаБ↩" : "ШинаБ"; accent: true
+                            onClicked: Telem.cmd(f ? { "action": "recover", "kind": "bus", "idx": 1 } : { "action": "fail", "kind": "bus", "idx": 1 })
+                        }
+                        DpButton {
+                            property bool f: root.hasData() && Telem.state.plant
+                                && Telem.state.plant.tie_closed
+                            text: f ? "СА ⚡" : "СА ○"
+                            onClicked: Telem.cmd({ "action": "tie", "closed": !f })
                         }
                     }
                     RowLayout {
